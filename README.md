@@ -55,3 +55,5 @@ npm run dist:win
 [PRD](docs/prd.md) · [Архитектура](docs/architecture.md) · [Формат документа](docs/document-format.md) · [Поведение редактора](docs/editor-model.md) · [Дизайн-система](docs/design-system.md) · [Разработка](docs/development.md) · [Проверки и ограничения](docs/verification.md).
 
 Исходный пользовательский PRD сохранён как `Desktop_Whiteboard_PRD_v2.md`. Тестовая сцена создаётся в `artifacts/acceptance.axon` desktop-тестом и не является стартовым содержимым или библиотекой шаблонов. Лицензии зависимостей: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+@@@
