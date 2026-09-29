@@ -1,0 +1,102 @@
+name: macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New release tag (published as a prerelease)
+        default: v0.1.0-macos
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run setup:electron
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Build DMG and ZIP
+        run: npm run dist:mac -- --${{ matrix.arch }} --publish never
+      - name: Verify archives and launch packaged Axon
+        run: node tests/mac-packaged.mjs
+        env:
+          AXON_MAC_ARCH: ${{ matrix.arch }}
+      - name: Save test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-evidence-${{ matrix.arch }}
+          path: |
+            artifacts/mac-*.json
+            artifacts/mac-*.png
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Save distributables
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-release-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    name: Publish macOS downloads
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: macos-release-*
+          path: release
+          merge-multiple: true
+      - name: Publish verified files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]
+          (cd release && sha256sum -- *.dmg *.zip > SHA256SUMS.txt)
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+            --title "Axon 0.1.0 — macOS" --notes-file docs/releases/macos-0.1.0.md \
+            --prerelease --draft
+          gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip release/SHA256SUMS.txt
+          gh release edit "$RELEASE_TAG" --draft=false

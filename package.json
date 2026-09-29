@@ -60,7 +60,8 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "identity": null,
+      "identity": "-",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "icon": "build/icon.png"
     },
     "dmg": {

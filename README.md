@@ -37,7 +37,7 @@ npm run test:exports
 npm run dist:win
 ```
 
-`npm run dist:mac` настроен для запуска на Mac. Windows и macOS проверяются отдельно; наличие конфигурации не означает проверку платформы. Приложение не подписано, notarization не выполнена.
+`npm run dist:mac` запускается на Mac. Для сборки обеих архитектур и публикации DMG/ZIP есть ручной workflow **macOS release** в GitHub Actions. Windows и macOS проверяются отдельно; результаты — в протоколе проверок. macOS использует локальную подпись ad-hoc; Developer ID и notarization отсутствуют. Windows-сборка не подписана.
 
 ## Документация
 

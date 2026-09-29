@@ -52,7 +52,9 @@ npm run dist:mac
 - Windows: `release/win-unpacked/Axon.exe`; NSIS installer `release/Axon Setup 0.1.0.exe`.
 - macOS: DMG/ZIP в `release/`; сборку выполнять на macOS после `npm ci` и загрузки правильного Electron runtime.
 - `electronDist` указывает на локальный `node_modules/electron/dist`; не копируйте Windows runtime на Mac.
-- Подпись Windows, Developer ID и notarization macOS требуют учётных данных. Конфигурация macOS unsigned (`identity: null`); ни подпись, ни notarization не выполнены.
+- Подпись Windows, Developer ID и notarization macOS требуют учётных данных. Для macOS настроена локальная подпись ad-hoc (`identity: "-"`); она не подтверждает разработчика через Apple и не заменяет notarization.
+
+Workflow `.github/workflows/macos-release.yml` запускается вручную через GitHub Actions. Он собирает DMG/ZIP на отдельных macOS-runner: `macos-15` для arm64 и `macos-15-intel` для x64. После тестов модельного слоя проверяются DMG, распакованный ZIP, подпись и запуск `Axon.app` через `tests/mac-packaged.mjs`. Только при успехе обеих архитектур создаётся отдельный предварительный релиз с файлами и SHA-256. Существующие релизы не изменяются. Журналы и снимки сохраняются как Actions artifacts.
 
 Иконки: `node scripts/make-icon.mjs` (затем копия `build/icon.png` в `public/icon.png`). Лицензии: `node scripts/notices.mjs`. Реальные статусы упаковки и запуска указаны в `verification.md`.
 
