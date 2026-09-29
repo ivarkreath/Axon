@@ -2,7 +2,7 @@
 
 ## Окружение
 
-Node.js 24 LTS, npm, Windows или macOS. Проверенное окружение этой реализации: Windows, Node 24.21.0. Версии зависимостей закреплены в `package-lock.json`; OpenType.js дополнительно закреплён точно на 1.3.4 из-за проверенной несовместимости 2.0.0 с Noto.
+Node.js 24 LTS, npm, Windows или macOS. Проверенное окружение этой реализации: Windows, Node 24.21.0; macOS 15.7.9 arm64/x64 с Node 24 в GitHub Actions. Версии зависимостей закреплены в `package-lock.json`; OpenType.js дополнительно закреплён точно на 1.3.4 из-за проверенной несовместимости 2.0.0 с Noto.
 
 ```sh
 npm ci
@@ -56,6 +56,8 @@ npm run dist:mac
 
 Workflow `.github/workflows/macos-release.yml` запускается вручную через GitHub Actions. Он собирает DMG/ZIP на отдельных macOS-runner: `macos-15` для arm64 и `macos-15-intel` для x64. После тестов модельного слоя проверяются DMG, распакованный ZIP, подпись и запуск `Axon.app` через `tests/mac-packaged.mjs`. Только при успехе обеих архитектур создаётся отдельный предварительный релиз с файлами и SHA-256. Существующие релизы не изменяются. Журналы и снимки сохраняются как Actions artifacts.
 
+Успешный [прогон обеих архитектур](https://github.com/ivarkreath/Axon/actions/runs/36569366310) опубликован как [v0.1.0-macos](https://github.com/ivarkreath/Axon/releases/tag/v0.1.0-macos). Для следующей публикации укажите новый уникальный `release_tag`; уже опубликованные файлы не перезаписываются. Для локального повтора проверки пакетов после сборки на Mac: `node tests/mac-packaged.mjs`.
+
 Иконки: `node scripts/make-icon.mjs` (затем копия `build/icon.png` в `public/icon.png`). Лицензии: `node scripts/notices.mjs`. Реальные статусы упаковки и запуска указаны в `verification.md`.
 
 ## Данные
@@ -71,6 +73,6 @@ Workflow `.github/workflows/macos-release.yml` запускается вручн
 
 В ограниченной песочнице Windows Vite/Vitest могут завершаться с `spawn EPERM`; нужен разрешённый запуск локальных дочерних процессов. Это ограничение среды проверки, не специальный режим продукта. При включённом npm offline first install может выдавать `ENOTCACHED`; разрешите обычный доступ к npm registry для установки. Для штатного запуска сетевой доступ не требуется.
 
-Native Computer Use в этой сессии недоступен: `failed to connect native pipe`, Windows error 2. Снимки сделаны через Electron/Playwright и осмотрены отдельно. macOS, реальные жесты физического трекпада, реальная смена DPI между мониторами и подписанные установщики требуют отдельного оборудования/учётных данных.
+Native Computer Use в этой сессии недоступен: `failed to connect native pipe`, Windows error 2. Снимки сделаны через Electron/Playwright и осмотрены отдельно. Сборка и базовый запуск macOS проверены на GitHub-hosted macOS-runner. Полная приёмка на пользовательском Mac, жесты физического трекпада и смена DPI между мониторами требуют отдельного оборудования; Developer ID и notarization — учётных данных Apple.
 
 Для Vite исключены `artifacts`, release и кэши, чтобы watcher не пытался открыть заблокированные служебные файлы Electron. Только локальный dev HTML разрешает inline HMR preamble; production CSP остаётся `script-src 'self'`. IPC URL сравнивается в нормализованном виде.
