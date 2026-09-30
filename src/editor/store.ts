@@ -92,6 +92,11 @@ export class Editor {
   history = new History();
   private listeners = new Set<() => void>();
   private textBefore: AxonDocument | null = null;
+  // Keep only the latest result for each live tab; documents are immutable snapshots.
+  private dirtyCache = new WeakMap<
+    object,
+    { doc: AxonDocument; savedContent: string; dirty: boolean }
+  >();
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -164,9 +169,15 @@ export class Editor {
   }
   isDirty(id = this.state.sessionId) {
     const tab = this.tabs.get(id);
-    return (
-      !!tab && serializeDocument(tab.state.doc) !== tab.session.savedContent
-    );
+    if (!tab) return false;
+    const doc = tab.state.doc,
+      savedContent = tab.session.savedContent;
+    const cached = this.dirtyCache.get(tab);
+    if (cached?.doc === doc && cached.savedContent === savedContent)
+      return cached.dirty;
+    const dirty = serializeDocument(doc) !== savedContent;
+    this.dirtyCache.set(tab, { doc, savedContent, dirty });
+    return dirty;
   }
   snapshots(): SessionUpdate[] {
     return [...this.tabs].map(([sessionId, tab]) => ({

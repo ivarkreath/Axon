@@ -15,13 +15,14 @@ export function snap(
     delta.x = Math.round(box.x / 20) * 20 - box.x;
     delta.y = Math.round(box.y / 20) * 20 - box.y;
   }
+  const excludedIds = new Set(excluded);
   if (objects)
     for (const axis of ["x", "y"] as const) {
       const size = axis === "x" ? "w" : "h";
       let best = 6 / zoom;
       let found: number | undefined;
       for (const o of doc.objects)
-        if (!excluded.includes(o.id) && o.type !== "connector") {
+        if (!excludedIds.has(o.id) && o.type !== "connector") {
           const b = objectBounds(o, doc);
           for (const a of [
             box[axis],

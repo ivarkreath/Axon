@@ -2,7 +2,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { FileWorkspace } from "../electron/workspace";
+import { createHash } from "node:crypto";
+import { FileWorkspace, fingerprint } from "../electron/workspace";
 import { emptyDocument, serializeDocument } from "../src/model/document";
 import { Editor } from "../src/editor/store";
 import { defaults, type Session } from "../src/shared/contracts";
@@ -17,6 +18,18 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
 });
 describe("isolated document sessions", () => {
+  it("fingerprints multi-chunk files, returns null for missing files and propagates read failures", async () => {
+    const dir = await directory();
+    const file = path.join(dir, "fingerprint.axon");
+    const bytes = Buffer.from("Файл с внешними изменениями\n".repeat(10000));
+    await writeFile(file, bytes);
+    expect(await fingerprint(file)).toBe(
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    expect(await fingerprint(path.join(dir, "missing.axon"))).toBeNull();
+    await expect(fingerprint(dir)).rejects.toThrow();
+  });
+
   it("keeps undo, selection, camera and dirty state per tab", () => {
     const e = new Editor(),
       a = emptyDocument(),

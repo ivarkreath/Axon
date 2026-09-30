@@ -38,7 +38,8 @@ export function ContextMenu({
     y: number;
     session: string;
   } | null>(null);
-  const selected = s.doc.objects.filter((o) => s.selection.includes(o.id));
+  const selection = new Set(s.selection);
+  const selected = s.doc.objects.filter((o) => selection.has(o.id));
   const locked = selected.some((o) => o.locked);
   return (
     <>

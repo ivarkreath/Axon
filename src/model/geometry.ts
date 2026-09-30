@@ -32,14 +32,17 @@ export function rect(a: Point, b: Point): Bounds {
 }
 export function union(boxes: Bounds[]): Bounds | null {
   if (!boxes.length) return null;
-  const x = Math.min(...boxes.map((b) => b.x)),
-    y = Math.min(...boxes.map((b) => b.y));
-  return {
-    x,
-    y,
-    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
-    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
-  };
+  let x = Infinity,
+    y = Infinity,
+    right = -Infinity,
+    bottom = -Infinity;
+  for (const box of boxes) {
+    x = Math.min(x, box.x);
+    y = Math.min(y, box.y);
+    right = Math.max(right, box.x + box.w);
+    bottom = Math.max(bottom, box.y + box.h);
+  }
+  return { x, y, w: right - x, h: bottom - y };
 }
 export const intersects = (a: Bounds, b: Bounds) =>
   a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y;

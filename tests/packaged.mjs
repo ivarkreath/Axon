@@ -1,5 +1,5 @@
 import { _electron as electron } from "playwright";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
 const env = {
@@ -18,6 +18,8 @@ const app = await electron.launch({
 });
 try {
   const page = await app.firstWindow();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
   await page.getByRole("button", { name: "Файл", exact: true }).waitFor();
   assert.match(await page.title(), /Axon/);
   assert.equal(
@@ -45,6 +47,23 @@ try {
     .click();
   metadata.executable = await app.evaluate(() => process.execPath);
   await page.screenshot({ path: "artifacts/packaged-windows.png" });
+  // Exercise the first PDF export from file://, including the deferred local chunk.
+  await page.getByRole("button", { name: "Фигура · R", exact: true }).click();
+  await page.mouse.move(300, 250);
+  await page.mouse.down();
+  await page.mouse.move(500, 350, { steps: 5 });
+  await page.mouse.up();
+  const pdfPath = path.join(env.AXON_TEST_DATA, "packaged-export.pdf");
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath });
+  }, pdfPath);
+  await page.getByRole("button", { name: "Экспорт", exact: true }).click();
+  await page.getByRole("button", { name: "PDF Документ", exact: true }).click();
+  await page.getByRole("button", { name: "Сохранить экспорт", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.equal((await readFile(pdfPath)).subarray(0, 5).toString(), "%PDF-");
+  assert.deepEqual(errors, [], "packaged renderer errors");
+  metadata.pdfExport = true;
   await writeFile(
     "artifacts/packaged-results.json",
     JSON.stringify(metadata, null, 2),

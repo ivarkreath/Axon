@@ -1,5 +1,6 @@
 ﻿import { readFile, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 import {
   emptyDocument,
@@ -14,9 +15,9 @@ import { nextUntitledName } from "../src/shared/documentName";
 export type FileTab = TabSession & { fingerprint: string | null };
 export async function fingerprint(file: string) {
   try {
-    return createHash("sha256")
-      .update(await readFile(file))
-      .digest("hex");
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(file)) hash.update(chunk);
+    return hash.digest("hex");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
@@ -107,9 +108,9 @@ export class FileWorkspace {
         throw new Error(
           "Этот файл уже открыт в другой вкладке. Выберите другое имя.",
         );
-    await writeDocument(file, snapshot);
+    const savedContent = await writeDocument(file, snapshot);
     tab.path = await realpath(file);
-    tab.savedContent = serializeDocument(snapshot);
+    tab.savedContent = savedContent;
     tab.fingerprint = createHash("sha256")
       .update(tab.savedContent)
       .digest("hex");
@@ -143,6 +144,7 @@ export class FileWorkspace {
         savedContent = serializeDocument(parseDocument(entry.savedContent));
       const file = typeof entry.path === "string" ? entry.path : null;
       const unavailable = !!file && !(await stat(file).catch(() => null));
+      const dirty = serializeDocument(document) !== savedContent;
       restored.push({
         ...entry,
         untitledName:
@@ -154,8 +156,8 @@ export class FileWorkspace {
         document,
         savedContent,
         path: file,
-        dirty: serializeDocument(document) !== savedContent,
-        recovered: serializeDocument(document) !== savedContent,
+        dirty,
+        recovered: dirty,
         unavailable,
       });
     }
