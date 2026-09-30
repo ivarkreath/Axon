@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: macos-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_tag }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
   prepare:
@@ -83,6 +83,9 @@ jobs:
       - run: npm test
       - name: Build DMG and ZIP
         run: npm run dist:mac -- --${{ matrix.arch }} --publish never
+        env:
+          # Ad-hoc signing uses no certificate/secrets and is required on PR builds too.
+          CSC_FOR_PULL_REQUEST: "true"
       - name: Verify archives and launch packaged Axon
         run: node tests/mac-packaged.mjs
         env:
