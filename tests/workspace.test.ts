@@ -1,9 +1,17 @@
 ﻿import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  rmdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import { FileWorkspace, fingerprint } from "../electron/workspace";
+import { FileWorkspace, fingerprint, sameFile } from "../electron/workspace";
 import { emptyDocument, serializeDocument } from "../src/model/document";
 import { Editor } from "../src/editor/store";
 import { defaults, type Session } from "../src/shared/contracts";
@@ -18,6 +26,37 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
 });
 describe("isolated document sessions", () => {
+  it("detects deleted files through a directory alias even after the parent is removed", async () => {
+    const dir = await directory();
+    const real = path.join(dir, "real");
+    const alias = path.join(dir, "alias");
+    await mkdir(path.join(real, "nested"), { recursive: true });
+    await symlink(
+      real,
+      alias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const file = path.join(alias, "nested", "document.axon");
+    await writeFile(file, serializeDocument(emptyDocument()));
+    const workspace = new FileWorkspace();
+    const tab = await workspace.open(file);
+    expect(await workspace.conflict(tab, file)).toBe(false);
+    expect(
+      await workspace.open(path.join(real, "nested", "document.axon")),
+    ).toBe(tab);
+    await rm(file);
+    expect(await sameFile(tab.path!, file)).toBe(true);
+    expect(await workspace.conflict(tab, file)).toBe(true);
+    await rmdir(path.join(real, "nested"));
+    expect(await workspace.conflict(tab, file)).toBe(true);
+    expect(
+      await sameFile(tab.path!, path.join(alias, "nested", "other.axon")),
+    ).toBe(false);
+    expect(
+      await sameFile(tab.path!, path.join(dir, "elsewhere", "document.axon")),
+    ).toBe(false);
+  });
+
   it("fingerprints multi-chunk files, returns null for missing files and propagates read failures", async () => {
     const dir = await directory();
     const file = path.join(dir, "fingerprint.axon");

@@ -1,6 +1,8 @@
 import { _electron as electron } from "playwright";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { listPackage } from "@electron/asar";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +19,44 @@ const extracted = path.join(output, `mac-extracted-${arch}-${Date.now()}`);
 execFileSync("hdiutil", ["verify", `${base}.dmg`], { stdio: "inherit" });
 execFileSync("ditto", ["-x", "-k", `${base}.zip`, extracted]);
 const bundle = path.join(extracted, "Axon.app");
+async function auditBundle(appPath) {
+  const asar = path.join(appPath, "Contents", "Resources", "app.asar");
+  const entries = [
+    ...(await readdir(appPath, { recursive: true })),
+    ...listPackage(asar),
+  ];
+  const forbidden = entries.filter((name) =>
+    /(?:^|[/\\])(?:AGENTS(?:\.override)?\.md|\.agent|\.agents|\.codex|\.gitnexus[^/\\]*|\.env[^/\\]*|tests|artifacts|recovery\.json|settings\.json)(?:$|[/\\])|\.(?:axon|pem|key|p12|pfx)$/i.test(
+      name,
+    ),
+  );
+  assert.deepEqual(forbidden, [], "Private/development files in macOS package");
+  return createHash("sha256")
+    .update(await readFile(asar))
+    .digest("hex");
+}
+const asarSha256 = await auditBundle(bundle);
+const mounted = path.join(output, `mac-mounted-${arch}-${Date.now()}`);
+await mkdir(mounted);
+execFileSync("hdiutil", [
+  "attach",
+  `${base}.dmg`,
+  "-readonly",
+  "-nobrowse",
+  "-mountpoint",
+  mounted,
+]);
+try {
+  const dmgBundle = path.join(mounted, "Axon.app");
+  assert.equal(
+    await auditBundle(dmgBundle),
+    asarSha256,
+    "DMG and ZIP must contain the same application",
+  );
+  execFileSync("codesign", ["--verify", "--deep", "--strict", dmgBundle]);
+} finally {
+  execFileSync("hdiutil", ["detach", mounted]);
+}
 execFileSync(
   "codesign",
   ["--verify", "--deep", "--strict", "--verbose=2", bundle],
@@ -43,7 +83,12 @@ const app = await electron.launch({
 });
 let page;
 const errors = [];
-const checks = ["DMG integrity", "ZIP extraction", "ad-hoc bundle signature"];
+const checks = [
+  "DMG integrity and mounted bundle signature",
+  "ZIP extraction",
+  "DMG and ZIP privacy audit and matching app.asar",
+  "ad-hoc bundle signature",
+];
 try {
   page = await app.firstWindow();
   page.on("pageerror", (error) => errors.push(error.message));
@@ -102,6 +147,7 @@ try {
   assert.deepEqual(errors, []);
   const report = {
     ...metadata,
+    asarSha256,
     arch,
     osRelease: os.release(),
     checks,

@@ -23,10 +23,22 @@ export async function fingerprint(file: string) {
     throw e;
   }
 }
+async function resolvedFilePath(file: string): Promise<string> {
+  const absolute = path.resolve(file);
+  try {
+    return await realpath(absolute);
+  } catch {
+    // A deleted file still belongs to its canonical parent (e.g. /var -> /private/var).
+    const parent = path.dirname(absolute);
+    return parent === absolute
+      ? absolute
+      : path.join(await resolvedFilePath(parent), path.basename(absolute));
+  }
+}
 export async function sameFile(a: string, b: string) {
   const [ra, rb] = await Promise.all([
-    realpath(a).catch(() => path.resolve(a)),
-    realpath(b).catch(() => path.resolve(b)),
+    resolvedFilePath(a),
+    resolvedFilePath(b),
   ]);
   if (
     process.platform === "win32"

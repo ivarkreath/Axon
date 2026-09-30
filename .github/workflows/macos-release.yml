@@ -1,24 +1,63 @@
-name: macOS release
+name: macOS CI and release
 
 on:
+  push:
+    branches: [main, test, develope]
+    tags: ["v*", "[0-9]*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: New release tag (published as a prerelease)
-        default: v0.1.0-macos
-        required: true
+        description: "New release tag, e.g. v2.0.0-macos (empty = build only)"
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: macos-release
-  cancel-in-progress: false
+  group: macos-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_tag }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
+  prepare:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Check version and tag
+        id: metadata
+        run: node scripts/macos-release.mjs
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+      - name: Refuse to replace an existing release
+        if: steps.metadata.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > existing-tags.txt
+          if grep -Fxq -- "$RELEASE_TAG" existing-tags.txt; then
+            echo "::error::Release $RELEASE_TAG already exists. Choose a new tag."
+            exit 1
+          fi
+
   build:
     name: macOS ${{ matrix.arch }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +83,9 @@ jobs:
       - run: npm test
       - name: Build DMG and ZIP
         run: npm run dist:mac -- --${{ matrix.arch }} --publish never
+        env:
+          # Ad-hoc signing uses no certificate/secrets and is required on PR builds too.
+          CSC_FOR_PULL_REQUEST: "true"
       - name: Verify archives and launch packaged Axon
         run: node tests/mac-packaged.mjs
         env:
@@ -71,7 +113,8 @@ jobs:
 
   publish:
     name: Publish macOS downloads
-    needs: build
+    needs: [prepare, build]
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -89,14 +132,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]
+          for arch in arm64 x64; do
+            for ext in dmg zip; do
+              test -s "release/Axon-$RELEASE_VERSION-mac-$arch.$ext"
+            done
+          done
           (cd release && sha256sum -- *.dmg *.zip > SHA256SUMS.txt)
+          cp docs/releases/macos.md release-notes.md
+          printf '\nVersion: %s\nCommit: %s\nBuild: %s/%s/actions/runs/%s\n' \
+            "$RELEASE_VERSION" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> release-notes.md
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
-            --title "Axon 0.1.0 — macOS" --notes-file docs/releases/macos-0.1.0.md \
+            --title "Axon $RELEASE_VERSION — macOS" --notes-file release-notes.md \
             --prerelease --draft
           gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip release/SHA256SUMS.txt
           gh release edit "$RELEASE_TAG" --draft=false
