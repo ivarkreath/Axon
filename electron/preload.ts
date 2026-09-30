@@ -7,8 +7,12 @@ const invoke = (channel: string, ...args: unknown[]) =>
   });
 const api: AxonAPI = {
   init: () => invoke("axon:init"),
-  updateDocument: (doc) => invoke("axon:update", doc),
-  file: (command, doc, index) => invoke("axon:file", command, doc, index),
+  updateDocument: (doc, id, view) => invoke("axon:update", doc, id, view),
+  file: (command, doc, index, id) =>
+    invoke("axon:file", command, doc, index, id),
+  activateSession: (id) => invoke("axon:activate", id),
+  closeTab: (id, doc) => invoke("axon:close-tab", id, doc),
+  folder: (select) => invoke("axon:folder", select),
   preferences: (prefs) => invoke("axon:preferences", prefs),
   importImage: () => invoke("axon:import-image"),
   decodeImage: (bytes, mime) => invoke("axon:decode-image", bytes, mime),
@@ -17,7 +21,7 @@ const api: AxonAPI = {
   writePNG: (bytes) => invoke("axon:clipboard-png", bytes),
   exportFile: (format, bytes, title) =>
     invoke("axon:export", format, bytes, title),
-  close: (doc) => invoke("axon:close", doc),
+  close: (doc, tabs) => invoke("axon:close", doc, tabs),
   onBackup: (callback) => {
     const listener = (_: unknown, status: BackupStatus) => callback(status);
     ipcRenderer.on("axon:backup", listener);

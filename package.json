@@ -15,8 +15,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:desktop": "node tests/desktop.mjs",
-    "package:win": "npm run build \u0026\u0026 electron-builder --win --dir",
-    "dist:win": "npm run build \u0026\u0026 electron-builder --win nsis",
+    "package:win": "npm run dist:win",
+    "dist:win": "node scripts/publish-windows.mjs",
     "dist:mac": "npm run build \u0026\u0026 electron-builder --mac dmg zip",
     "test:recovery": "node tests/recovery.mjs",
     "test:exports": "node tests/verify-exports.mjs",
@@ -34,7 +34,8 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json",
-      "THIRD_PARTY_NOTICES.md"
+      "THIRD_PARTY_NOTICES.md",
+      "!**/{test,tests,__tests__}{,/**/*}"
     ],
     "asar": true,
     "fileAssociations": [
@@ -46,7 +47,7 @@
     ],
     "win": {
       "target": [
-        "nsis"
+        "dir"
       ],
       "icon": "build/icon.ico"
     },

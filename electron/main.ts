@@ -9,12 +9,11 @@ import {
   nativeImage,
   type IpcMainInvokeEvent,
 } from "electron";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
-  emptyDocument,
   parseDocument,
   serializeDocument,
   type Asset,
@@ -24,9 +23,12 @@ import {
   preferencesSchema,
   type Session,
   type BackupStatus,
+  type ViewState,
 } from "../src/shared/contracts";
-import { atomicWrite, readDocument, writeDocument } from "./storage";
+import { atomicWrite } from "./storage";
+import { FileWorkspace, type FileTab } from "./workspace";
 import { errorMessage } from "../src/shared/errors";
+import { documentName } from "../src/shared/documentName";
 
 app.setName("Axon");
 if (process.env.AXON_TEST_DATA)
@@ -34,10 +36,8 @@ if (process.env.AXON_TEST_DATA)
 let win: BrowserWindow;
 let preferences = { ...defaults };
 let recents: string[] = [];
-let document = emptyDocument();
-let currentPath: string | null = null;
-let saved = serializeDocument(document);
-let recovered = false;
+const workspace = new FileWorkspace();
+let fileBusy = false;
 let closing = false;
 let ready = false;
 let closePending = false;
@@ -49,19 +49,36 @@ const devURL = process.env.AXON_DEV_URL;
 const pageURL = devURL
   ? new URL(devURL).href
   : pathToFileURL(path.join(__dirname, "../dist/index.html")).href;
-const session = (): Session => ({
-  document,
-  path: currentPath,
-  dirty: serializeDocument(document) !== saved,
+const session = (tab = workspace.active): Session => ({
+  ...tab,
   recents,
   preferences,
-  recovered,
+  tabs: [...workspace.tabs.values()],
+  workspaceFolder: workspace.folder,
 });
+const viewSchema = z
+  .object({
+    camera: z
+      .object({
+        x: z.number().finite(),
+        y: z.number().finite(),
+        zoom: z.number().min(0.1).max(4),
+      })
+      .strict(),
+    selection: z.array(z.string().max(100)).max(10000),
+  })
+  .strict();
+const tabId = (raw: unknown) =>
+  raw === undefined ? workspace.activeId : z.string().uuid().parse(raw);
 const emitBackup = (status: BackupStatus) => {
   if (win && !win.isDestroyed()) win.webContents.send("axon:backup", status);
 };
 async function saveSettings() {
-  const snapshot = JSON.stringify({ preferences, recents });
+  const snapshot = JSON.stringify({
+    preferences,
+    recents,
+    workspaceFolder: workspace.folder,
+  });
   settingsQueue = settingsQueue
     .catch(() => {})
     .then(() => atomicWrite(dataFile("settings.json"), snapshot));
@@ -78,12 +95,7 @@ function enqueueBackup() {
   }
   emitBackup({ state: "pending" });
   backupTimer = setTimeout(() => {
-    const snapshot = JSON.stringify({
-      document,
-      path: currentPath,
-      saved,
-      at: new Date().toISOString(),
-    });
+    const snapshot = JSON.stringify(workspace.snapshot());
     writeQueue = writeQueue
       .catch(() => {})
       .then(() => atomicWrite(dataFile("recovery.json"), snapshot));
@@ -102,42 +114,70 @@ async function clearRecovery() {
   await writeQueue.catch(() => {});
   await rm(dataFile("recovery.json"), { force: true });
 }
-async function save(as = false): Promise<boolean> {
-  let file = currentPath;
-  if (as || !file) {
+async function persistRecovery(exclude = new Set<string>()) {
+  clearTimeout(backupTimer);
+  await writeQueue.catch(() => {});
+  if (preferences.restoreSession)
+    await atomicWrite(
+      dataFile("recovery.json"),
+      JSON.stringify(workspace.snapshot(exclude)),
+    );
+  else await rm(dataFile("recovery.json"), { force: true });
+}
+async function save(tab: FileTab, as = false): Promise<boolean> {
+  const snapshot = tab.document;
+  let file = as ? null : tab.path;
+  if (file && (await workspace.conflict(tab, file))) {
+    const result = await dialog.showMessageBox(win, {
+      type: "warning",
+      message: "Файл изменён извне или удалён",
+      detail:
+        "Рабочая копия сохранена во вкладке. Сохраните её под другим именем, чтобы не перезаписать внешний файл.",
+      buttons: ["Сохранить как…", "Отмена"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (result.response !== 0) return false;
+    file = null;
+  }
+  if (!file) {
     const result = await dialog.showSaveDialog(win, {
       title: "Сохранить документ Axon",
-      defaultPath: file ?? `${document.title}.axon`,
+      defaultPath:
+        tab.path ??
+        path.join(workspace.folder ?? "", documentName(tab) + ".axon"),
       filters: [{ name: "Документ Axon", extensions: ["axon"] }],
     });
     if (result.canceled || !result.filePath) return false;
     file = result.filePath;
     if (!file.toLowerCase().endsWith(".axon")) file += ".axon";
+    if (await workspace.conflict(tab, file))
+      throw new Error("Выберите другое имя: исходный файл изменён извне.");
   }
-  const snapshot = document;
-  await writeDocument(file, snapshot);
-  saved = serializeDocument(snapshot);
-  currentPath = file;
-  remember(file);
+  await workspace.save(tab, file, snapshot);
+  remember(tab.path!);
   await saveSettings();
   enqueueBackup();
   return true;
 }
-async function allowLeave(): Promise<boolean> {
-  if (serializeDocument(document) === saved) return true;
+async function allowLeave(
+  tab: FileTab,
+): Promise<"keep" | "discard" | "cancel"> {
+  if (!tab.dirty) return "keep";
   const result = await dialog.showMessageBox(win, {
     type: "question",
     title: "Axon",
     message: "Сохранить изменения?",
-    detail: `Документ «${document.title}» содержит несохранённые изменения.`,
+    detail:
+      "Документ «" + documentName(tab) + "» содержит несохранённые изменения.",
     buttons: ["Сохранить", "Не сохранять", "Отмена"],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
   });
-  if (result.response === 2) return false;
-  if (result.response === 0) return save();
-  return true;
+  if (result.response === 2) return "cancel";
+  if (result.response === 1) return "discard";
+  return (await save(tab)) && !tab.dirty ? "keep" : "cancel";
 }
 function checkSender(event: IpcMainInvokeEvent) {
   if (
@@ -203,52 +243,76 @@ async function initialize() {
     const state = JSON.parse(await readFile(dataFile("settings.json"), "utf8"));
     preferences = preferencesSchema.parse(state.preferences);
     recents = z.array(z.string().max(4096)).max(8).parse(state.recents);
+    workspace.folder = z
+      .string()
+      .max(4096)
+      .nullable()
+      .parse(state.workspaceFolder ?? null);
   } catch {
-    /* First launch or invalid preferences: safe defaults. */
+    /* First launch or invalid settings. */
   }
   if (preferences.restoreSession)
     try {
       const raw = JSON.parse(await readFile(dataFile("recovery.json"), "utf8"));
-      const restored = parseDocument(raw.document);
-      const savedDocument = parseDocument(raw.saved);
-      const dirty =
-        serializeDocument(restored) !== serializeDocument(savedDocument);
+      // Upgrade the former one-document working copy without altering its contents.
+      const snapshot = raw.tabs
+        ? raw
+        : {
+            tabs: [
+              {
+                sessionId: crypto.randomUUID(),
+                document: raw.document,
+                savedContent: raw.saved,
+                path: raw.path,
+                fingerprint: null,
+              },
+            ],
+          };
+      if (!Array.isArray(snapshot.tabs) || snapshot.tabs.length > 100)
+        throw new Error("Недопустимая сессия");
+      for (const tab of snapshot.tabs) {
+        z.string().uuid().parse(tab.sessionId);
+        if (tab.view) tab.view = viewSchema.parse(tab.view);
+        tab.fingerprint = z
+          .string()
+          .length(64)
+          .nullable()
+          .parse(tab.fingerprint ?? null);
+      }
+      const dirty = snapshot.tabs.some(
+        (t: FileTab) =>
+          serializeDocument(parseDocument(t.document)) !==
+          serializeDocument(parseDocument(t.savedContent)),
+      );
       const choice = dirty
         ? await dialog.showMessageBox(win, {
             type: "question",
             title: "Axon",
             message: "Восстановить последнюю рабочую копию?",
             detail:
-              "Будут доступны только изменения, записанные на диск до завершения предыдущей сессии.",
+              "Будут восстановлены вкладки из последней записанной сессии.",
             buttons: ["Восстановить", "Не восстанавливать"],
             defaultId: 0,
             cancelId: 1,
           })
         : { response: 0 };
-      if (choice.response === 0) {
-        document = restored;
-        saved = serializeDocument(savedDocument);
-        currentPath = typeof raw.path === "string" ? raw.path : null;
-        recovered = dirty;
-      } else await clearRecovery();
+      if (choice.response === 0) await workspace.restore(snapshot);
+      else await clearRecovery();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
         await dialog.showMessageBox(win, {
           type: "warning",
           message: "Рабочую копию не удалось восстановить.",
           detail: "Исходные файлы не изменены. " + String(error),
         });
-      }
     }
   const initialPath = process.argv.find((a) =>
     a.toLowerCase().endsWith(".axon"),
   );
   if (initialPath)
     try {
-      document = await readDocument(path.resolve(initialPath));
-      currentPath = path.resolve(initialPath);
-      saved = serializeDocument(document);
-      remember(currentPath);
+      const tab = await workspace.open(path.resolve(initialPath));
+      remember(tab.path!);
     } catch (error) {
       await dialog.showMessageBox(win, {
         type: "error",
@@ -256,6 +320,7 @@ async function initialize() {
         detail: String(error),
       });
     }
+  if (!workspace.tabs.size) workspace.add();
   ready = true;
 }
 app.whenReady().then(async () => {
@@ -342,50 +407,100 @@ app.whenReady().then(async () => {
   if (process.platform !== "darwin") win.setMenuBarVisibility(false);
   await initialize();
   handle("axon:init", () => session());
-  handle("axon:update", (raw) => {
-    document = parseDocument(raw);
+  handle("axon:update", (raw, id, view) => {
+    const tab = workspace.update(
+      tabId(id),
+      parseDocument(raw),
+      view === undefined ? undefined : viewSchema.parse(view),
+    );
     enqueueBackup();
-    return { dirty: serializeDocument(document) !== saved };
+    return { dirty: tab.dirty };
   });
-  handle("axon:file", async (command, raw, index) => {
-    const cmd = z
-      .enum(["new", "open", "save", "saveAs", "recent"])
-      .parse(command);
-    document = parseDocument(raw);
-    if (cmd === "save" || cmd === "saveAs")
-      return (await save(cmd === "saveAs")) ? session() : null;
-    let next = emptyDocument();
-    let nextPath: string | null = null;
-    if (cmd === "open" || cmd === "recent") {
-      if (cmd === "recent") {
-        const i = z
-          .number()
-          .int()
-          .min(0)
-          .max(recents.length - 1)
-          .parse(index);
-        nextPath = recents[i];
-      } else {
-        const result = await dialog.showOpenDialog(win, {
-          title: "Открыть документ Axon",
-          properties: ["openFile"],
-          filters: [{ name: "Документ Axon", extensions: ["axon"] }],
-        });
-        if (result.canceled) return null;
-        nextPath = result.filePaths[0];
-      }
-      next = await readDocument(nextPath!);
-    }
-    if (!(await allowLeave())) return null;
-    await clearRecovery();
-    document = next;
-    currentPath = nextPath;
-    saved = serializeDocument(document);
-    recovered = false;
-    if (nextPath) remember(nextPath);
-    await saveSettings();
+  handle("axon:activate", (id) => {
+    workspace.get(tabId(id));
+    workspace.activeId = tabId(id);
     enqueueBackup();
-    return session();
+  });
+  handle("axon:folder", async (select) => {
+    if (select !== undefined) z.boolean().parse(select);
+    if (select) {
+      const result = await dialog.showOpenDialog(win, {
+        title: "Рабочая папка Axon",
+        properties: ["openDirectory"],
+        defaultPath: workspace.folder ?? undefined,
+      });
+      if (!result.canceled) {
+        workspace.folder = await realpath(result.filePaths[0]);
+        await saveSettings();
+      }
+    }
+    workspace.folderFiles = workspace.folder
+      ? (await readdir(workspace.folder, { withFileTypes: true }))
+          .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".axon"))
+          .map((e) => path.join(workspace.folder!, e.name))
+          .sort()
+      : [];
+    return {
+      path: workspace.folder,
+      files: workspace.folderFiles.map((f) => path.basename(f)),
+    };
+  });
+  handle("axon:file", async (command, raw, index, id) => {
+    if (fileBusy) throw new Error("Дождитесь завершения файловой операции.");
+    fileBusy = true;
+    try {
+      const cmd = z
+        .enum(["new", "open", "save", "saveAs", "recent", "folder"])
+        .parse(command);
+      const tab = workspace.update(tabId(id), parseDocument(raw));
+      if (cmd === "save" || cmd === "saveAs")
+        return (await save(tab, cmd === "saveAs")) ? session(tab) : null;
+      if (cmd === "new") workspace.add();
+      else {
+        let file: string;
+        if (cmd === "recent" || cmd === "folder") {
+          const files = cmd === "recent" ? recents : workspace.folderFiles;
+          file =
+            files[
+              z
+                .number()
+                .int()
+                .min(0)
+                .max(files.length - 1)
+                .parse(index)
+            ];
+        } else {
+          const result = await dialog.showOpenDialog(win, {
+            title: "Открыть документ Axon",
+            properties: ["openFile"],
+            filters: [{ name: "Документ Axon", extensions: ["axon"] }],
+          });
+          if (result.canceled) return null;
+          file = result.filePaths[0];
+        }
+        const opened = await workspace.open(file);
+        remember(opened.path!);
+      }
+      await saveSettings();
+      enqueueBackup();
+      return session();
+    } finally {
+      fileBusy = false;
+    }
+  });
+  handle("axon:close-tab", async (id, raw) => {
+    if (fileBusy) return null;
+    fileBusy = true;
+    try {
+      const tab = workspace.update(tabId(id), parseDocument(raw));
+      if ((await allowLeave(tab)) === "cancel") return null;
+      await persistRecovery(new Set([tab.sessionId]));
+      workspace.remove(tab.sessionId);
+      enqueueBackup();
+      return session();
+    } finally {
+      fileBusy = false;
+    }
   });
   handle("axon:preferences", async (raw) => {
     preferences = preferencesSchema.parse(raw);
@@ -461,27 +576,43 @@ app.whenReady().then(async () => {
     await atomicWrite(target, bytes);
     return true;
   });
-  handle("axon:close", async (raw) => {
-    if (closePending) return;
+  handle("axon:close", async (raw, updates) => {
+    if (closePending || fileBusy) return;
     closePending = true;
+    fileBusy = true;
     try {
-      document = parseDocument(raw);
-      if (!(await allowLeave())) return;
-      await clearRecovery();
-      if (preferences.restoreSession && currentPath)
-        await atomicWrite(
-          dataFile("recovery.json"),
-          JSON.stringify({
-            document: parseDocument(saved),
-            path: currentPath,
-            saved,
-            at: new Date().toISOString(),
-          }),
-        );
+      if (updates !== undefined) {
+        const list = z
+          .array(
+            z
+              .object({
+                sessionId: z.string().uuid(),
+                document: z.unknown(),
+                view: viewSchema,
+              })
+              .strict(),
+          )
+          .max(100)
+          .parse(updates);
+        for (const update of list)
+          workspace.update(
+            update.sessionId,
+            parseDocument(update.document),
+            update.view as ViewState,
+          );
+      } else workspace.update(workspace.activeId, parseDocument(raw));
+      const discard = new Set<string>();
+      for (const tab of workspace.tabs.values()) {
+        const choice = await allowLeave(tab);
+        if (choice === "cancel") return;
+        if (choice === "discard") discard.add(tab.sessionId);
+      }
+      await persistRecovery(discard);
       closing = true;
       win.close();
     } finally {
       closePending = false;
+      fileBusy = false;
     }
   });
   // Flush the renderer's latest edit before prompting, even inside the debounce window.

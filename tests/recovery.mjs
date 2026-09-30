@@ -69,7 +69,7 @@ for (const [name, restore, choice] of [
     results.push(name);
     console.log("PASS recovery " + name);
     if (name === "restore") {
-      // Discard on New must not resurrect at the next launch.
+      // New retains the working copy; explicit close/discard removes only that tab.
       await app.evaluate(({ dialog }) => {
         dialog.showMessageBox = async () => ({
           response: 1,
@@ -82,7 +82,20 @@ for (const [name, restore, choice] of [
       const saved = JSON.parse(
         await readFile(path.join(data, "recovery.json"), "utf8"),
       );
-      assert.equal(saved.document.objects.length, 0);
+      assert.deepEqual(
+        saved.tabs.find((t) => t.sessionId === session.sessionId).document,
+        modified,
+      );
+      await page.evaluate(({ id, doc }) => window.axon.closeTab(id, doc), {
+        id: session.sessionId,
+        doc: modified,
+      });
+      const afterClose = JSON.parse(
+        await readFile(path.join(data, "recovery.json"), "utf8"),
+      );
+      assert.ok(
+        !afterClose.tabs.some((t) => t.sessionId === session.sessionId),
+      );
       results.push("explicit-discard-clears-recovery");
     }
   } finally {

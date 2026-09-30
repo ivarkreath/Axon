@@ -1,5 +1,10 @@
 import { parse, type Font } from "opentype.js";
-import type { AxonObject, Bounds, Style } from "../model/document";
+import {
+  isTextTopic,
+  type AxonObject,
+  type Bounds,
+  type Style,
+} from "../model/document";
 const fonts: Partial<Record<"sans" | "mono", Font>> = {};
 export function registerFonts(sans: ArrayBuffer, mono: ArrayBuffer) {
   fonts.sans = parse(sans);
@@ -59,11 +64,16 @@ export function safeArea(o: AxonObject): Bounds {
   let fx = 1,
     fy = 1,
     dy = 0;
-  const pad = o.type === "text" ? 0 : 18;
+  const pad = o.type === "text" ? 0 : (o.style.padding ?? 18);
   if (o.type === "shape") {
     if (o.shape === "diamond") {
       fx = 0.5;
       fy = 0.5;
+    }
+    if (o.shape === "triangle") {
+      fx = 0.5;
+      fy = 0.45;
+      dy = o.h * 0.225;
     }
     if (o.shape === "ellipse") {
       fx = 0.7;
@@ -86,16 +96,33 @@ export function safeArea(o: AxonObject): Bounds {
   };
 }
 export function fitText<T extends AxonObject>(o: T): T {
+  if (isTextTopic(o)) {
+    const pad = o.style.padding ?? 6;
+    const natural = Math.max(
+      o.style.fontSize,
+      ...o.text.split("\n").map((line) => textWidth(line, o.style)),
+    );
+    const width = Math.max(
+      o.style.fontSize,
+      Math.min((300 * o.style.fontSize) / 18, natural),
+    );
+    const lines = wrapText(o.text, width, o.style);
+    return {
+      ...o,
+      w: width + pad * 2,
+      h: lines.length * o.style.fontSize * 1.45 + pad * 2,
+    };
+  }
   if (!("text" in o) || o.type === "connector" || !o.text) return o;
   const widthFactor =
-    o.type === "shape" && o.shape === "diamond"
+    o.type === "shape" && ["diamond", "triangle"].includes(o.shape)
       ? 0.5
       : o.type === "shape" && o.shape === "ellipse"
         ? 0.7
         : 1;
   const minWidth =
     (Math.max(...Array.from(o.text).map((c) => textWidth(c, o.style)), 20) +
-      (o.type === "text" ? 0 : 36)) /
+      (o.type === "text" ? 0 : (o.style.padding ?? 18) * 2)) /
     widthFactor;
   const sized = { ...o, w: Math.max(o.w, minWidth) };
   const area = safeArea(sized);
@@ -103,13 +130,22 @@ export function fitText<T extends AxonObject>(o: T): T {
   const required = lines.length * o.style.fontSize * 1.45;
   const factor =
     o.type === "shape"
-      ? { diamond: 0.5, ellipse: 0.7, database: 0.68, callout: 0.8, rect: 1 }[
-          o.shape
-        ]
+      ? {
+          diamond: 0.5,
+          triangle: 0.45,
+          ellipse: 0.7,
+          database: 0.68,
+          callout: 0.8,
+          rect: 1,
+        }[o.shape]
       : 1;
   return {
     ...sized,
-    h: Math.max(o.h, (required + (o.type === "text" ? 0 : 40)) / factor),
+    h: Math.max(
+      o.h,
+      (required + (o.type === "text" ? 0 : (o.style.padding ?? 18) * 2 + 4)) /
+        factor,
+    ),
   };
 }
 export type TextLine = { text: string; x: number; y: number };

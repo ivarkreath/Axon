@@ -374,10 +374,11 @@ try {
     .click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   note("transparent PNG at 1× exported");
-  // Pending changes must prompt; Cancel must preserve them.
+  // New opens a tab; closing the dirty original must still honor Cancel.
   await page.locator('[data-object-id="note"]').first().click();
   await press("ArrowRight");
   const dirtyDoc = (await state()).document;
+  const dirtySession = (await state()).sessionId;
   await app.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({
       response: 2,
@@ -385,13 +386,29 @@ try {
     });
   });
   await press("Control+n");
-  assert.deepEqual((await state()).document, dirtyDoc);
-  note("Cancel New retains dirty document");
+  assert.equal((await state()).document.objects.length, 0);
+  assert.deepEqual(
+    (await state()).tabs.find((t) => t.sessionId === dirtySession).document,
+    dirtyDoc,
+  );
+  const canceled = await page.evaluate(
+    async ({ id, doc }) => window.axon.closeTab(id, doc),
+    { id: dirtySession, doc: dirtyDoc },
+  );
+  assert.equal(canceled, null);
+  assert.deepEqual(
+    (await state()).tabs.find((t) => t.sessionId === dirtySession).document,
+    dirtyDoc,
+  );
+  note("New preserves the dirty tab; Cancel Close retains its document");
   await page.waitForTimeout(1200);
   const recovery = JSON.parse(
     await readFile(path.join(data, "recovery.json"), "utf8"),
   );
-  assert.deepEqual(recovery.document, dirtyDoc);
+  assert.deepEqual(
+    recovery.tabs.find((t) => t.sessionId === dirtySession).document,
+    dirtyDoc,
+  );
   note("debounced recovery is written to disk separately from manual save");
   // 400 shapes: record frame intervals during real pointer pan; no claimed FPS target.
   const stress = helper.fixture();

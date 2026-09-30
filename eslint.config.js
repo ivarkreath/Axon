@@ -8,6 +8,8 @@ export default tseslint.config(
       "release/**",
       "node_modules/**",
       "artifacts/**",
+      ".agent/**",
+      ".gitnexus/**",
     ],
   },
   js.configs.recommended,
