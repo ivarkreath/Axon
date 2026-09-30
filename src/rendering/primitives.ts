@@ -1,11 +1,19 @@
 import { line } from "d3-shape";
+import { isTextTopic } from "../model/document";
 import type {
   AxonDocument,
   AxonObject,
   Bounds,
   Point,
 } from "../model/document";
-import { midpoint, route, union } from "../model/geometry";
+import {
+  connectorPath,
+  connectionHeads,
+  midpoint,
+  objectBounds,
+  route,
+  union,
+} from "../model/geometry";
 import { fontFor, layoutText, safeArea, textWidth } from "./text";
 export type PathPrimitive = {
   type: "path";
@@ -14,6 +22,7 @@ export type PathPrimitive = {
   stroke: string;
   width: number;
   dash: boolean;
+  cap?: "butt" | "round";
 };
 export type ImagePrimitive = {
   type: "image";
@@ -50,26 +59,23 @@ function ellipsePath(x: number, y: number, w: number, h: number) {
 export function labelArea(o: AxonObject, doc: AxonDocument): Bounds {
   if (o.type !== "connector") return safeArea(o);
   const p = midpoint(route(o, doc));
+  const paddingScale = (o.style.padding ?? 18) / 18;
   const w =
-    Math.max(16, ...o.text.split("\n").map((s) => textWidth(s, o.style))) + 12;
+    Math.max(
+      16 * paddingScale,
+      ...o.text.split("\n").map((s) => textWidth(s, o.style)),
+    ) +
+    12 * paddingScale;
   const h =
-    Math.max(1, o.text.split("\n").length) * o.style.fontSize * 1.45 + 8;
+    Math.max(1, o.text.split("\n").length) * o.style.fontSize * 1.45 +
+    8 * paddingScale;
   return { x: p.x - w / 2, y: p.y - h / 2, w, h };
-}
-function arrow(tip: Point, from: Point, size: number): string {
-  const angle = Math.atan2(tip.y - from.y, tip.x - from.x),
-    a = angle + 0.48,
-    b = angle - 0.48;
-  return linePath([
-    { x: tip.x - size * Math.cos(a), y: tip.y - size * Math.sin(a) },
-    tip,
-    { x: tip.x - size * Math.cos(b), y: tip.y - size * Math.sin(b) },
-  ]);
 }
 export function primitives(
   o: AxonObject,
   doc: AxonDocument,
   outlineText = true,
+  viewportZoom?: number,
 ): Primitive[] {
   const { x, y, w, h, style: s } = o;
   const out: Primitive[] = [];
@@ -80,9 +86,11 @@ export function primitives(
     width = s.strokeWidth,
     dash = s.dash,
   ) => out.push(path(d, fill, stroke, width, dash));
-  if (o.type === "shape") {
+  if (o.type === "shape" && !isTextTopic(o)) {
     if (o.shape === "rect") add(rectPath(x, y, w, h, s.radius));
     if (o.shape === "ellipse") add(ellipsePath(x, y, w, h));
+    if (o.shape === "triangle")
+      add(`M${x + w / 2} ${y}L${x + w} ${y + h}L${x} ${y + h}Z`);
     if (o.shape === "diamond")
       add(
         `M${x + w / 2} ${y}L${x + w} ${y + h / 2}L${x + w / 2} ${y + h}L${x} ${y + h / 2}Z`,
@@ -121,32 +129,21 @@ export function primitives(
       });
   }
   if (o.type === "connector") {
-    const points = route(o, doc).filter(
-      (p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y,
+    const heads = connectionHeads(o, doc, viewportZoom);
+    add(
+      connectorPath(
+        o,
+        doc,
+        heads.start?.inset ?? 0,
+        heads.end?.inset ?? 0,
+      ),
+      "none",
+      s.stroke,
+      heads.width,
     );
-    add(linePath(points), "none");
-    if (points.length > 1) {
-      if (o.arrows !== "none")
-        add(
-          arrow(
-            points.at(-1)!,
-            points.at(-2)!,
-            Math.max(11, s.strokeWidth * 4),
-          ),
-          "none",
-          s.stroke,
-          s.strokeWidth,
-          false,
-        );
-      if (o.arrows === "both")
-        add(
-          arrow(points[0], points[1], Math.max(11, s.strokeWidth * 4)),
-          "none",
-          s.stroke,
-          s.strokeWidth,
-          false,
-        );
-    }
+    (out[out.length - 1] as PathPrimitive).cap = "butt";
+    for (const head of [heads.end, heads.start])
+      if (head) add(head.d, head.filled ? s.stroke : "none", head.filled ? "none" : s.stroke, head.width, false);
     if (o.text) {
       const a = labelArea(o, doc);
       out.push(
@@ -179,8 +176,7 @@ export function contentBounds(
   // SVG paths share the same geometry with the screen. Text extents are measured from font outlines.
   for (const o of objects) {
     if (o.type === "connector") {
-      const points = route(o, doc);
-      const b = union(points.map((p) => ({ ...p, w: 0, h: 0 })))!;
+      const b = objectBounds(o, doc);
       const margin = Math.max(14, o.style.strokeWidth * 5);
       boxes.push({
         x: b.x - margin,

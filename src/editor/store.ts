@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from "react";
 import {
   createObject,
+  CONNECTOR_STROKE_WIDTH,
+  SHAPE_STROKE_WIDTH,
+  serializeDocument,
+  documentSchema,
   emptyDocument,
   type Asset,
   type AxonDocument,
@@ -25,12 +29,34 @@ import {
 } from "../model/operations";
 import { type Camera, fit, zoomAt } from "../model/geometry";
 import { contentBounds } from "../rendering/primitives";
-import { defaults, type Preferences, type Session } from "../shared/contracts";
+import {
+  defaults,
+  type Preferences,
+  type Session,
+  type TabSession,
+  type SessionUpdate,
+} from "../shared/contracts";
 import { fitText } from "../rendering/text";
 import type { Guide } from "../model/snapping";
+import {
+  addTopic,
+  createTopic,
+  reflowChangedTopics,
+  topicSide,
+  type MindSide,
+} from "../model/mindmap";
+import { nextUntitledName } from "../shared/documentName";
 export type Tool =
-  "select" | "shape" | "connector" | "text" | "sticky" | "stroke" | "hand";
+  | "select"
+  | "shape"
+  | "connector"
+  | "text"
+  | "sticky"
+  | "stroke"
+  | "hand"
+  | "mindmap";
 export type EditorState = {
+  sessionId: string;
   doc: AxonDocument;
   selection: string[];
   camera: Camera;
@@ -41,9 +67,16 @@ export type EditorState = {
   guides: Guide[];
   marquee: Bounds | null;
   viewport: { w: number; h: number };
+  interacting: boolean;
 };
-class Editor {
+export class Editor {
+  tabs = new Map<
+    string,
+    { state: EditorState; history: History; session: TabSession }
+  >();
+  cancelGesture: (() => void) | null = null;
   state: EditorState = {
+    sessionId: "",
     doc: emptyDocument(),
     selection: [],
     camera: { x: 220, y: 160, zoom: 1 },
@@ -54,6 +87,7 @@ class Editor {
     guides: [],
     marquee: null,
     viewport: { w: 1000, h: 700 },
+    interacting: false,
   };
   history = new History();
   private listeners = new Set<() => void>();
@@ -67,24 +101,93 @@ class Editor {
   getSnapshot = () => this.state;
   set(patch: Partial<EditorState>) {
     this.state = { ...this.state, ...patch };
+    const tab = this.tabs.get(this.state.sessionId);
+    if (tab) {
+      tab.state = this.state;
+      tab.history = this.history;
+    }
     for (const l of this.listeners) l();
   }
   load(session: Session) {
-    this.history.clear();
+    this.acceptSession(session);
+    this.activate(session.sessionId ?? session.document.id);
+  }
+  acceptSession(session: Session) {
+    const entries: TabSession[] = session.tabs ?? [
+      {
+        ...session,
+        sessionId: session.sessionId ?? session.document.id,
+        savedContent:
+          session.savedContent ??
+          (session.dirty ? "" : serializeDocument(session.document)),
+      },
+    ];
+    for (const entry of entries) {
+      const existing = this.tabs.get(entry.sessionId);
+      entry.untitledName ??=
+        existing?.session.untitledName ??
+        nextUntitledName(Array.from(this.tabs.values(), (t) => t.session));
+      if (existing) existing.session = entry;
+      else
+        this.tabs.set(entry.sessionId, {
+          session: entry,
+          history: new History(),
+          state: {
+            ...this.state,
+            sessionId: entry.sessionId,
+            doc: entry.document,
+            editing: null,
+            selection: entry.view?.selection ?? [],
+            camera: entry.view?.camera ?? { x: 220, y: 160, zoom: 1 },
+            tool: "select",
+            guides: [],
+            marquee: null,
+            interacting: false,
+            prefs: session.preferences,
+          },
+        });
+    }
+    this.set({ prefs: session.preferences });
+  }
+  activate(id: string) {
+    if (!this.tabs.has(id)) return;
+    this.cancelGesture?.();
+    this.endText();
     this.textBefore = null;
+    const tab = this.tabs.get(id)!;
+    this.history = tab.history;
     this.set({
-      doc: session.document,
-      selection: [],
-      editing: null,
-      prefs: session.preferences,
-      tool: "select",
+      ...tab.state,
+      viewport: this.state.viewport,
+      prefs: this.state.prefs,
     });
-    this.fit();
+  }
+  isDirty(id = this.state.sessionId) {
+    const tab = this.tabs.get(id);
+    return (
+      !!tab && serializeDocument(tab.state.doc) !== tab.session.savedContent
+    );
+  }
+  snapshots(): SessionUpdate[] {
+    return [...this.tabs].map(([sessionId, tab]) => ({
+      sessionId,
+      document: tab.state.doc,
+      view: { camera: tab.state.camera, selection: tab.state.selection },
+    }));
+  }
+  closeSession(id: string, result: Session) {
+    this.cancelGesture?.();
+    this.endText();
+    this.tabs.delete(id);
+    this.acceptSession(result);
+    this.activate(result.sessionId ?? result.document.id);
   }
   preview(doc: AxonDocument) {
     this.set({ doc });
   }
   commit(before: AxonDocument, after = this.state.doc) {
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      after = { ...after, version: 3 };
     this.history.commit(before, after);
     this.set({ doc: after });
   }
@@ -94,17 +197,20 @@ class Editor {
     this.commit(before, fn(before));
   }
   select(ids: string[]) {
-    this.set({ selection: expandSelection(this.state.doc, ids) });
+    this.set({ selection: expandSelection(this.state.doc, ids, false) });
   }
   setTool(tool: Tool) {
+    this.cancelGesture?.();
     this.endText();
     this.set({ tool, selection: [], guides: [] });
   }
   undo() {
+    this.cancelGesture?.();
     this.endText();
     this.set({ doc: this.history.undo(this.state.doc), selection: [] });
   }
   redo() {
+    this.cancelGesture?.();
     this.endText();
     this.set({ doc: this.history.redo(this.state.doc), selection: [] });
   }
@@ -149,14 +255,15 @@ class Editor {
   style(patch: Partial<Style>) {
     const ids = this.state.selection;
     if (ids.length)
-      this.change((doc) => ({
+      this.formatChange((doc) => ({
         ...doc,
         objects: doc.objects.map((o) =>
-          ids.includes(o.id) && !o.locked && !o.groupId
+          ids.includes(o.id) && !o.locked
             ? fitText({ ...o, style: { ...o.style, ...patch } })
             : o,
         ),
       }));
+    if (ids.length) return;
     const selected = this.state.doc.objects.find((o) => ids.includes(o.id));
     const key = selected?.type ?? this.state.tool;
     const base =
@@ -172,6 +279,113 @@ class Editor {
       styles: { ...this.state.prefs.styles, [key]: { ...base, ...patch } },
     });
   }
+  // Each property choice is its own history action, without leaving the text session.
+  formatChange(fn: (doc: AxonDocument) => AxonDocument) {
+    const changed = fn(this.state.doc);
+    const next = reflowChangedTopics(this.textBefore ?? this.state.doc, changed);
+    if (!this.validTextGeometry(next)) return;
+    if (this.state.editing) {
+      if (this.textBefore) this.commit(this.textBefore, this.state.doc);
+      this.commit(this.state.doc, next);
+      this.textBefore = this.state.doc;
+    }
+    else this.change(() => next);
+  }
+  private validTextGeometry(doc: AxonDocument) {
+    if (documentSchema.safeParse(doc).success) return true;
+    if (typeof window !== "undefined")
+      window.dispatchEvent(
+        new CustomEvent("axon-error", {
+          detail:
+            "Достигнут предел размера объекта или документа. Уменьшите текст или размер шрифта.",
+        }),
+      );
+    return false;
+  }
+  useStyleForNew() {
+    const objects = this.state.doc.objects.filter((o) =>
+      this.state.selection.includes(o.id),
+    );
+    if (objects.length !== 1) return;
+    const o = objects[0];
+    this.preferences({
+      ...this.state.prefs,
+      ...(o.type === "connector"
+        ? { connector: { route: o.route, arrows: o.arrows, startMarker: o.startMarker, endMarker: o.endMarker } }
+        : {}),
+      styles: {
+        ...this.state.prefs.styles,
+        [o.type === "shape" && o.mind ? "mindmap" : o.type]: { ...o.style },
+      },
+    });
+  }
+  resetStyle() {
+    if (this.state.selection.length)
+      this.formatChange((doc) => ({
+        ...doc,
+        objects: doc.objects.map((o) =>
+          this.state.selection.includes(o.id) && !o.locked
+            ? fitText({
+                ...o,
+                style:
+                  o.type === "shape" && o.mind
+                    ? createTopic(o, doc.background, !o.mind.parentId).style
+                    : createObject(o.type, o, doc.background).style,
+              })
+            : o,
+        ),
+      }));
+    else {
+      const styles = { ...this.state.prefs.styles };
+      delete styles[this.state.tool];
+      this.preferences({
+        ...this.state.prefs,
+        styles,
+        ...(this.state.tool === "connector"
+          ? { connector: defaults.connector }
+          : {}),
+      });
+    }
+  }
+  topic(
+    sibling = false,
+    root = false,
+    point?: Point,
+    side?: MindSide,
+    sourceId?: string,
+  ) {
+    this.endText();
+    const o = this.state.doc.objects.find(
+      (o) =>
+        (sourceId ? o.id === sourceId : this.state.selection.includes(o.id)) &&
+        o.type === "shape" &&
+        o.mind,
+    );
+    const parentId = root
+      ? undefined
+      : o?.type === "shape"
+        ? sibling
+          ? (o.mind?.parentId ?? o.id)
+          : o.id
+        : undefined;
+    const c = this.state.camera,
+      v = this.state.viewport;
+    const result = addTopic(
+      this.state.doc,
+      point ?? { x: (v.w / 2 - c.x) / c.zoom, y: (v.h / 2 - c.y) / c.zoom },
+      parentId,
+      side ??
+        (sibling && o?.type === "shape" && o.mind?.parentId
+          ? topicSide(this.state.doc, o)
+          : "right"),
+      parentId ? undefined : this.state.prefs.styles.mindmap,
+    );
+    if (result) {
+      if (!this.validTextGeometry(result.doc)) return;
+      this.change(() => result.doc);
+      this.beginText(result.node.id);
+    }
+  }
   preferences(prefs: Preferences) {
     this.set({ prefs });
     void window.axon
@@ -182,7 +396,14 @@ class Editor {
         ),
       );
   }
-  newObject(type: AxonObject["type"], p: Point) {
+  newObject(type: AxonObject["type"] | "mindmap", p: Point) {
+    if (type === "mindmap")
+      return createTopic(
+        p,
+        this.state.doc.background,
+        true,
+        this.state.prefs.styles.mindmap,
+      );
     const o = createObject(
       type,
       p,
@@ -190,7 +411,40 @@ class Editor {
       this.state.shape,
     );
     const style = this.state.prefs.styles[type];
-    return style ? { ...o, style: { ...style } } : o;
+    if (o.type === "connector") Object.assign(o, this.state.prefs.connector);
+    return style
+      ? {
+          ...o,
+          style: {
+            ...style,
+            ...(type === "shape"
+              ? { strokeWidth: SHAPE_STROKE_WIDTH }
+              : type === "sticky" && style.strokeWidth > 0
+                ? { strokeWidth: SHAPE_STROKE_WIDTH }
+                : {}),
+          },
+        }
+      : o;
+  }
+  nodeConnection(p: Point) {
+    const connection = this.newObject("connector", p);
+    // Node handles create a standard link, independently of the drawing tool's width.
+    return {
+      ...connection,
+      style: { ...connection.style, strokeWidth: CONNECTOR_STROKE_WIDTH },
+    };
+  }
+  connectionDefaults(patch: Partial<AxonObject>) {
+    this.preferences({
+      ...this.state.prefs,
+      connector: {
+        ...this.state.prefs.connector,
+        ...("route" in patch ? { route: patch.route! } : {}),
+        ...("arrows" in patch ? { arrows: patch.arrows! } : {}),
+        ...("startMarker" in patch ? { startMarker: patch.startMarker } : {}),
+        ...("endMarker" in patch ? { endMarker: patch.endMarker } : {}),
+      },
+    });
   }
   beginText(id: string) {
     const o = this.state.doc.objects.find((o) => o.id === id);
@@ -200,23 +454,28 @@ class Editor {
     this.set({ editing: id, selection: [id], tool: "select" });
   }
   updateText(text: string) {
-    this.set({
-      doc: {
-        ...this.state.doc,
-        objects: this.state.doc.objects.map((o) =>
-          o.id === this.state.editing && "text" in o
-            ? fitText({ ...o, text })
-            : o,
-        ),
-      },
-    });
+    const doc = {
+      ...this.state.doc,
+      objects: this.state.doc.objects.map((o) =>
+        o.id === this.state.editing && "text" in o
+          ? fitText({ ...o, text })
+          : o,
+      ),
+    };
+    if (this.validTextGeometry(doc)) this.set({ doc });
   }
   endText() {
     if (!this.state.editing) return;
     const before = this.textBefore;
     this.textBefore = null;
     this.set({ editing: null });
-    if (before) this.commit(before);
+    if (before) {
+      const after = reflowChangedTopics(before, this.state.doc);
+      this.commit(
+        before,
+        this.validTextGeometry(after) ? after : this.state.doc,
+      );
+    }
   }
   addImage(asset: Asset, p?: Point) {
     const v = this.state.viewport,
@@ -251,7 +510,9 @@ class Editor {
       );
   }
   async paste() {
+    const sessionId = this.state.sessionId;
     const data = await window.axon.readClipboard();
+    if (this.state.sessionId !== sessionId) return;
     if (data.document) {
       const result = pasteObjects(this.state.doc, data.document);
       this.change(() => result.doc);

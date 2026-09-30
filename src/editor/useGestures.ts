@@ -14,13 +14,26 @@ import { expandSelection, moveObjects } from "../model/operations";
 import { snap } from "../model/snapping";
 import { editor } from "./store";
 import { resizeObject } from "./resize";
+import { scaleSelection } from "../model/transform";
+import { quickCreate, type Side } from "../model/quickCreate";
 type Gesture = {
-  kind: "pan" | "move" | "resize" | "draw" | "marquee" | "end";
+  kind:
+    | "pan"
+    | "move"
+    | "resize"
+    | "scale"
+    | "draw"
+    | "marquee"
+    | "end"
+    | "connect";
+  side?: Side;
+  dragged?: boolean;
   start: Point;
   screen: Point;
   before: AxonDocument;
   camera: Camera;
   ids: string[];
+  selectionBefore: string[];
   id?: string;
   handle?: string;
   end?: "start" | "end";
@@ -44,17 +57,43 @@ export function useGestures(space: React.RefObject<boolean>) {
       undefined;
     const handle = target.getAttribute("data-handle") ?? undefined;
     const end = target.getAttribute("data-end") as "start" | "end" | null;
+    const side = target.getAttribute("data-connect") as Side | null;
     const base = {
       start: p,
       screen,
       before: state.doc,
       camera: state.camera,
       ids: state.selection,
+      selectionBefore: state.selection,
     };
     e.currentTarget.setPointerCapture(e.pointerId);
+    editor.set({ interacting: true });
     if (e.button === 1 || space.current || state.tool === "hand") {
       gesture.current = { ...base, kind: "pan" };
       e.preventDefault();
+      return;
+    }
+    const mindSide = target
+      .closest("[data-mind-add]")
+      ?.getAttribute("data-mind-add") as "left" | "right" | null;
+    if (mindSide && id) {
+      e.preventDefault();
+      editor.set({ interacting: false });
+      editor.topic(false, false, undefined, mindSide, id);
+      return;
+    }
+    if (state.tool === "mindmap") {
+      e.preventDefault();
+      editor.set({ interacting: false });
+      editor.topic(false, true, p);
+      return;
+    }
+    if (side && id) {
+      gesture.current = { ...base, kind: "connect", id, side };
+      return;
+    }
+    if (handle && target.hasAttribute("data-scale")) {
+      gesture.current = { ...base, kind: "scale", handle };
       return;
     }
     if (handle && id) {
@@ -67,7 +106,7 @@ export function useGestures(space: React.RefObject<boolean>) {
     }
     if (state.tool === "select") {
       if (id) {
-        const group = expandSelection(state.doc, [id]);
+        const group = expandSelection(state.doc, [id], false);
         const ids = e.shiftKey
           ? state.selection.includes(id)
             ? state.selection.filter((i) => !group.includes(i))
@@ -92,7 +131,7 @@ export function useGestures(space: React.RefObject<boolean>) {
     }
     if (o.type === "connector") o.end = { type: "free", ...p };
     editor.preview({ ...state.doc, objects: [...state.doc.objects, o] });
-    editor.select([o.id]);
+    if (o.type !== "stroke") editor.select([o.id]);
     gesture.current = { ...base, kind: "draw", id: o.id };
   }
   function move(e: ReactPointerEvent<SVGSVGElement>) {
@@ -102,6 +141,35 @@ export function useGestures(space: React.RefObject<boolean>) {
     const screen = position(e),
       p = screenToWorld(screen, g.camera);
     const delta = { x: p.x - g.start.x, y: p.y - g.start.y };
+    if (Math.hypot(screen.x - g.screen.x, screen.y - g.screen.y) >= 5)
+      g.dragged = true;
+    if (g.kind === "connect") {
+      if (!g.dragged) return;
+      const source = g.before.objects.find((o) => o.id === g.id)!;
+      let connection = state.doc.objects.find(
+        (o) =>
+          o.id === g.ids[0] &&
+          o.type === "connector" &&
+          !g.before.objects.includes(o),
+      );
+      if (!connection) connection = editor.nodeConnection(g.start);
+      if (connection.type !== "connector") return;
+      connection = {
+        ...connection,
+        start: { type: "bound", nodeId: source.id, side: g.side! },
+        end: nearestAnchor(p, g.before, g.camera.zoom),
+      };
+      g.ids = [connection.id];
+      editor.set({
+        doc: { ...g.before, objects: [...g.before.objects, connection] },
+        selection: [connection.id],
+      });
+      return;
+    }
+    if (g.kind === "scale") {
+      editor.preview(scaleSelection(g.before, g.ids, g.handle!, delta));
+      return;
+    }
     if (g.kind === "pan") {
       editor.set({
         camera: {
@@ -117,6 +185,7 @@ export function useGestures(space: React.RefObject<boolean>) {
       return;
     }
     if (g.kind === "move") {
+      if (!g.dragged) return;
       const box = union(
         g.before.objects
           .filter((o) => g.ids.includes(o.id) && !o.locked)
@@ -237,6 +306,17 @@ export function useGestures(space: React.RefObject<boolean>) {
     if (!g) return;
     gesture.current = null;
     const state = editor.state;
+    if (g.kind === "connect" && !g.dragged) {
+      const source = g.before.objects.find((o) => o.id === g.id)!;
+      const connection = editor.nodeConnection(g.start);
+      if (connection.type === "connector") {
+        const result = quickCreate(g.before, source, g.side!, connection);
+        editor.commit(g.before, result.doc);
+        editor.beginText(result.node.id);
+      }
+      editor.set({ interacting: false, marquee: null, guides: [] });
+      return;
+    }
     if (g.kind === "marquee") {
       if (state.marquee) {
         const ids = state.doc.objects
@@ -253,18 +333,37 @@ export function useGestures(space: React.RefObject<boolean>) {
             if (o.type === "connector") {
               const a = endpoint(o.start, state.doc),
                 b = endpoint(o.end, state.doc);
-              if (Math.hypot(a.x - b.x, a.y - b.y) < 5)
+              if (
+                !g.dragged &&
+                Math.hypot(a.x - b.x, a.y - b.y) * g.camera.zoom < 5
+              )
                 return {
                   ...o,
-                  end: { type: "free" as const, x: a.x + 160, y: a.y },
+                  end: {
+                    type: "free" as const,
+                    x: a.x + 160 / g.camera.zoom,
+                    y: a.y,
+                  },
                 };
               return o;
             }
             if (o.type === "stroke") return o;
             return {
               ...o,
-              w: o.w < 12 ? (o.type === "sticky" ? 200 : 180) : o.w,
-              h: o.h < 12 ? (o.type === "sticky" ? 180 : 100) : o.h,
+              w: !g.dragged
+                ? o.type === "sticky"
+                  ? 200
+                  : o.type === "text"
+                    ? 240
+                    : 180
+                : Math.max(24, o.w),
+              h: !g.dragged
+                ? o.type === "sticky"
+                  ? 180
+                  : o.type === "text"
+                    ? 40
+                    : 100
+                : Math.max(24, o.h),
             };
           }),
         });
@@ -276,7 +375,7 @@ export function useGestures(space: React.RefObject<boolean>) {
         if (o?.type === "text" || o?.type === "sticky") editor.beginText(o.id);
       }
     }
-    editor.set({ marquee: null, guides: [] });
+    editor.set({ interacting: false, marquee: null, guides: [] });
   }
   function cancel() {
     const g = gesture.current;
@@ -284,8 +383,9 @@ export function useGestures(space: React.RefObject<boolean>) {
       if (g.kind !== "pan") editor.preview(g.before);
       else editor.set({ camera: g.camera });
       gesture.current = null;
+      editor.set({ selection: g.selectionBefore });
     }
-    editor.set({ marquee: null, guides: [] });
+    editor.set({ interacting: false, marquee: null, guides: [] });
   }
   return {
     onPointerDown: down,

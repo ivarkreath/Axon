@@ -4,6 +4,8 @@ const coordinate = z.number().finite().min(-1e6).max(1e6);
 const dimension = z.number().finite().min(1).max(100000);
 const id = z.string().min(1).max(100);
 export const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+export const markerSchema = z.enum(["none", "arrow", "open", "triangle", "circle", "diamond"]);
+export type Marker = z.infer<typeof markerSchema>;
 export const pointSchema = z.object({ x: coordinate, y: coordinate }).strict();
 export const styleSchema = z
   .object({
@@ -13,7 +15,8 @@ export const styleSchema = z
     dash: z.boolean(),
     radius: z.number().min(0).max(64),
     color: colorSchema,
-    fontSize: z.number().min(10).max(120),
+    fontSize: z.number().finite().min(1).max(1200),
+    padding: z.number().finite().min(0).max(10000).optional(),
     font: z.enum(["sans", "mono"]),
     align: z.enum(["left", "center", "right"]),
   })
@@ -44,7 +47,24 @@ export const objectSchema = z.discriminatedUnion("type", [
     .object({
       ...base,
       type: z.literal("shape"),
-      shape: z.enum(["rect", "ellipse", "diamond", "database", "callout"]),
+      shape: z.enum([
+        "rect",
+        "ellipse",
+        "diamond",
+        "triangle",
+        "database",
+        "callout",
+      ]),
+      mind: z
+        .object({
+          treeId: id,
+          parentId: id.nullable(),
+          order: z.number().int().nonnegative(),
+          side: z.enum(["left", "right"]).optional(),
+          presentation: z.literal("text").optional(),
+        })
+        .strict()
+        .optional(),
       text,
     })
     .strict(),
@@ -64,8 +84,11 @@ export const objectSchema = z.discriminatedUnion("type", [
       type: z.literal("connector"),
       start: endpointSchema,
       end: endpointSchema,
-      route: z.enum(["straight", "orthogonal"]),
+      route: z.enum(["straight", "orthogonal", "curved"]),
+      mindBranch: id.optional(),
       arrows: z.enum(["none", "end", "both"]),
+      startMarker: markerSchema.optional(),
+      endMarker: markerSchema.optional(),
       text,
     })
     .strict(),
@@ -85,7 +108,7 @@ export const assetSchema = z
 export const documentSchema = z
   .object({
     format: z.literal("axon"),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     id,
     title: z.string().min(1).max(200),
     background: colorSchema,
@@ -98,6 +121,77 @@ export const documentSchema = z
     const nodes = new Map(doc.objects.map((o) => [o.id, o]));
     const groups = new Map<string, boolean>();
     for (const o of doc.objects) {
+      if (o.type === "shape" && o.mind) {
+        if (doc.version < 3 && (o.mind.side || o.mind.presentation))
+          ctx.addIssue({
+            code: "custom",
+            message: "Текстовые темы требуют формат версии 3",
+          });
+        const directParent = o.mind.parentId
+          ? nodes.get(o.mind.parentId)
+          : undefined;
+        if (
+          o.mind.presentation === "text" &&
+          (!o.mind.side ||
+            (directParent?.type === "shape" &&
+              directParent.mind?.parentId &&
+              directParent.mind.side &&
+              directParent.mind.side !== o.mind.side))
+        )
+          ctx.addIssue({
+            code: "custom",
+            message: "Несогласованное направление ветви mind map",
+          });
+        const seen = new Set([o.id]);
+        let current = o;
+        while (current.mind?.parentId) {
+          const parent = nodes.get(current.mind.parentId);
+          if (
+            !parent ||
+            parent.type !== "shape" ||
+            !parent.mind ||
+            parent.mind.treeId !== o.mind.treeId ||
+            seen.has(parent.id)
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              message: "Повреждённая структура mind map",
+            });
+            break;
+          }
+          seen.add(parent.id);
+          current = parent;
+        }
+        if (current.mind?.parentId === null && current.id !== o.mind.treeId)
+          ctx.addIssue({
+            code: "custom",
+            message: "Недопустимый корень mind map",
+          });
+        const branches = doc.objects.filter(
+          (c) => c.type === "connector" && c.mindBranch === o.id,
+        );
+        if (branches.length !== (o.mind.parentId ? 1 : 0))
+          ctx.addIssue({
+            code: "custom",
+            message: "Отсутствует или повторяется ветвь mind map",
+          });
+      }
+      if (o.type === "connector" && o.mindBranch) {
+        const child = nodes.get(o.mindBranch);
+        if (
+          !child ||
+          child.type !== "shape" ||
+          !child.mind?.parentId ||
+          o.start.type !== "bound" ||
+          o.end.type !== "bound" ||
+          o.start.nodeId !== child.mind.parentId ||
+          o.end.nodeId !== child.id
+        )
+          ctx.addIssue({
+            code: "custom",
+            message: "Недопустимая структурная связь",
+          });
+      }
       if (ids.has(o.id))
         ctx.addIssue({ code: "custom", message: "Повторяющийся ID" });
       ids.add(o.id);
@@ -139,10 +233,16 @@ export type AxonObject = z.infer<typeof objectSchema>;
 export type ShapeKind = Extract<AxonObject, { type: "shape" }>["shape"];
 export type Endpoint = z.infer<typeof endpointSchema>;
 export type Connector = Extract<AxonObject, { type: "connector" }>;
+/** Missing fields retain the exact legacy appearance; loading does not rewrite data. */
+export function connectorMarkers(c: Pick<Connector, "arrows" | "startMarker" | "endMarker">): { start: Marker; end: Marker } {
+  return { start: c.startMarker ?? (c.arrows === "both" ? "arrow" : "none"), end: c.endMarker ?? (c.arrows === "none" ? "none" : "arrow") };
+}
 export type Asset = z.infer<typeof assetSchema>;
 export type AxonDocument = z.infer<typeof documentSchema>;
 export type Bounds = { x: number; y: number; w: number; h: number };
 export const uid = () => crypto.randomUUID();
+export const SHAPE_STROKE_WIDTH = 1.5;
+export const CONNECTOR_STROKE_WIDTH = 2;
 export const stickyColors = [
   "#F1D58A",
   "#B7DAB7",
@@ -160,7 +260,7 @@ export function defaultStyle(background = "#181C22"): Style {
   return {
     fill: light ? "#FFFFFF" : "#252D38",
     stroke: light ? "#596A7B" : "#8CACC5",
-    strokeWidth: 1.5,
+    strokeWidth: SHAPE_STROKE_WIDTH,
     dash: false,
     radius: 12,
     color: light ? "#202B38" : "#EDF3F9",
@@ -172,7 +272,7 @@ export function defaultStyle(background = "#181C22"): Style {
 export function emptyDocument(): AxonDocument {
   return {
     format: "axon",
-    version: 1,
+    version: 3,
     id: uid(),
     title: "Без названия",
     background: "#181C22",
@@ -233,7 +333,11 @@ export function createObject(
         route: "orthogonal",
         arrows: "end",
         text: "",
-        style: { ...b.style, fill: "none" },
+        style: {
+          ...b.style,
+          fill: "none",
+          strokeWidth: CONNECTOR_STROKE_WIDTH,
+        },
       };
     case "stroke":
       return {
@@ -261,7 +365,9 @@ export function parseDocument(value: unknown): AxonDocument {
     json &&
     typeof json === "object" &&
     "version" in json &&
-    json.version !== 1
+    json.version !== 1 &&
+    json.version !== 2 &&
+    json.version !== 3
   )
     throw new Error("Эта версия формата Axon пока не поддерживается.");
   const result = documentSchema.safeParse(json);
@@ -273,6 +379,15 @@ export function parseDocument(value: unknown): AxonDocument {
 }
 export function serializeDocument(doc: AxonDocument) {
   return JSON.stringify(parseDocument(doc));
+}
+export function isTextTopic(
+  o: AxonObject,
+): o is Extract<AxonObject, { type: "shape" }> & {
+  mind: NonNullable<Extract<AxonObject, { type: "shape" }>["mind"]> & {
+    presentation: "text";
+  };
+} {
+  return o.type === "shape" && o.mind?.presentation === "text";
 }
 export function pruneAssets(doc: AxonDocument): AxonDocument {
   const used = new Set(

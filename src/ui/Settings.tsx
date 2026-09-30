@@ -1,5 +1,5 @@
 import { editor, useEditor } from "../editor/store";
-import { Field, Modal } from "./components";
+import { ColorField, Field, Modal } from "./components";
 export function Settings({
   open,
   onClose,
@@ -16,6 +16,13 @@ export function Settings({
       description="Ваше рабочее пространство, ваши привычки."
     >
       <div className="modal-body">
+        <ColorField
+          label="Фон документа"
+          value={editor.state.doc.background}
+          onChange={(background) =>
+            editor.change((doc) => ({ ...doc, background }))
+          }
+        />
         <Field label="Тема интерфейса">
           <select
             value={prefs.theme}
@@ -109,6 +116,9 @@ export function Help({
           ["Копировать / вставить", "Ctrl + C / Ctrl + V"],
           ["Выделить всё", "Ctrl + A"],
           ["Сохранить / сохранить как", "Ctrl + S / Ctrl + Shift + S"],
+          ["Закрыть вкладку", "Ctrl + W"],
+          ["Следующая / предыдущая вкладка", "Ctrl + Tab / Ctrl + Shift + Tab"],
+          ["Подтема / соседняя тема (холст)", "Tab / Enter"],
           ["Дублировать", "Ctrl + D"],
           ["Группа / разгруппировать", "Ctrl + G / Ctrl + Shift + G"],
           ["Удалить", "Delete / Backspace"],

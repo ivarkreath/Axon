@@ -11,9 +11,6 @@ import {
   Plus,
   Maximize,
   Scan,
-  PanelRightOpen,
-  Check,
-  Circle,
   FilePlus2,
   FolderOpen,
   Clock3,
@@ -23,26 +20,24 @@ import { editor, useEditor } from "./editor/store";
 import { Canvas } from "./editor/Canvas";
 import { Toolbar } from "./ui/Toolbar";
 import { Inspector } from "./ui/Inspector";
+import { TooltipLayer } from "./ui/TooltipLayer";
 import { IconButton, Logo, Menu, MenuItem, Separator } from "./ui/components";
 import { Settings, Help } from "./ui/Settings";
 import { ExportDialog } from "./ui/ExportDialog";
 import { ContextMenu } from "./ui/ContextMenu";
 import { exportBytes } from "./io/export";
-import { serializeDocument } from "./model/document";
+import { documentName } from "./shared/documentName";
+
 import type { BackupStatus, FileCommand, Session } from "./shared/contracts";
 export default function App({ initial }: { initial: Session }) {
   const s = useEditor();
   const [fileState, setFileState] = useState(initial);
-  const [savedContent, setSavedContent] = useState(
-    initial.dirty ? "" : serializeDocument(initial.document),
-  );
   const [backup, setBackup] = useState<BackupStatus>({
     state: initial.preferences.restoreSession ? "pending" : "off",
   });
   const [settings, setSettings] = useState(false),
     [help, setHelp] = useState(false),
-    [exports, setExports] = useState(false),
-    [inspector, setInspector] = useState(true);
+    [exports, setExports] = useState(false);
   const [context, setContext] = useState<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -60,7 +55,13 @@ export default function App({ initial }: { initial: Session }) {
   const [systemDark, setSystemDark] = useState(
     matchMedia("(prefers-color-scheme: dark)").matches,
   );
-  const dirty = serializeDocument(s.doc) !== savedContent;
+  const dirty = editor.isDirty();
+  const activeTab = editor.tabs.get(s.sessionId);
+  const activeName = documentName(activeTab?.session);
+  const [folder, setFolder] = useState<{
+    path: string | null;
+    files: string[];
+  } | null>(null);
   const notify = useCallback(
     (message: string) => setToast({ message, error: false }),
     [],
@@ -75,14 +76,21 @@ export default function App({ initial }: { initial: Session }) {
       if (busyRef.current) return;
       busyRef.current = true;
       setBusy(true);
+      editor.cancelGesture?.();
       editor.endText();
+      const origin = editor.state.sessionId;
       try {
-        const result = await window.axon.file(command, editor.state.doc, index);
+        const result = await window.axon.file(
+          command,
+          editor.state.doc,
+          index,
+          origin,
+        );
         if (result) {
           setFileState(result);
-          setSavedContent(serializeDocument(result.document));
-          if (command === "new" || command === "open" || command === "recent")
-            editor.load(result);
+          editor.acceptSession(result);
+          if (["new", "open", "recent", "folder"].includes(command))
+            editor.activate(result.sessionId!);
           else notify("Файл сохранён");
         }
       } catch (e) {
@@ -94,10 +102,64 @@ export default function App({ initial }: { initial: Session }) {
     },
     [notify, error],
   );
+  const activate = useCallback(
+    async (id: string) => {
+      editor.cancelGesture?.();
+      editor.endText();
+      const before = editor.state;
+      editor.activate(id);
+      setContext(null);
+      setExports(false);
+      try {
+        await window.axon.updateDocument(before.doc, before.sessionId, {
+          camera: before.camera,
+          selection: before.selection,
+        });
+        await window.axon.activateSession(id);
+      } catch (e) {
+        error(String(e));
+      }
+      document.querySelector<SVGSVGElement>(".canvas")?.focus();
+    },
+    [error],
+  );
+  const closeTab = useCallback(
+    async (id = editor.state.sessionId) => {
+      if (busyRef.current) return;
+      editor.cancelGesture?.();
+      editor.endText();
+      const tab = editor.tabs.get(id);
+      if (!tab) return;
+      busyRef.current = true;
+      setBusy(true);
+      try {
+        const result = await window.axon.closeTab(id, tab.state.doc);
+        if (result) {
+          editor.closeSession(id, result);
+          setFileState(result);
+          setContext(null);
+        }
+      } catch (e) {
+        error(String(e));
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [error],
+  );
+  const showFolder = async (select = false) => {
+    try {
+      setFolder(await window.axon.folder(select));
+    } catch (e) {
+      error(String(e));
+    }
+  };
   const importImage = useCallback(async () => {
+    const sessionId = editor.state.sessionId;
     try {
       const asset = await window.axon.importImage();
-      if (asset) editor.addImage(asset);
+      if (asset && editor.state.sessionId === sessionId) editor.addImage(asset);
     } catch (e) {
       error(String(e));
     }
@@ -122,10 +184,15 @@ export default function App({ initial }: { initial: Session }) {
   }, [notify, error]);
   useEffect(() => {
     const timer = setTimeout(() => {
-      void window.axon.updateDocument(s.doc).catch((e) => error(String(e)));
+      void window.axon
+        .updateDocument(s.doc, s.sessionId, {
+          camera: s.camera,
+          selection: s.selection,
+        })
+        .catch((e) => error(String(e)));
     }, 120);
     return () => clearTimeout(timer);
-  }, [s.doc, error]);
+  }, [s.doc, s.sessionId, s.camera, s.selection, error]);
   useEffect(() => window.axon.onBackup(setBackup), []);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
@@ -143,8 +210,8 @@ export default function App({ initial }: { initial: Session }) {
     document.documentElement.dataset.motion = s.prefs.reducedMotion
       ? "reduced"
       : "full";
-    document.title = `${dirty ? "• " : ""}${s.doc.title} — Axon`;
-  }, [s.prefs.theme, s.prefs.reducedMotion, systemDark, dirty, s.doc.title]);
+    document.title = `${dirty ? "• " : ""}${activeName} — Axon`;
+  }, [s.prefs.theme, s.prefs.reducedMotion, systemDark, dirty, activeName]);
   useEffect(() => {
     if (!toast || toast.error) return;
     const t = setTimeout(() => setToast(null), 4200);
@@ -161,9 +228,10 @@ export default function App({ initial }: { initial: Session }) {
         if (["new", "open", "save", "saveAs"].includes(command))
           void file(command as FileCommand);
         if (command === "close") {
+          editor.cancelGesture?.();
           editor.endText();
           void window.axon
-            .close(editor.state.doc)
+            .close(editor.state.doc, editor.snapshots())
             .catch((e) => error(String(e)));
         }
       }),
@@ -172,6 +240,7 @@ export default function App({ initial }: { initial: Session }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
+      if (document.querySelector(".property-popup") || target.closest('[role="menu"]')) return;
       const textInput = !!target.closest(
         'input,textarea,select,[contenteditable="true"]',
       );
@@ -181,12 +250,38 @@ export default function App({ initial }: { initial: Session }) {
         mod && e.code.startsWith("Key")
           ? e.code.slice(3).toLowerCase()
           : e.key.toLowerCase();
-      if (mod && key === "s") {
+      if (mod && key === "s" && !modal) {
         e.preventDefault();
         void file(e.shiftKey ? "saveAs" : "save");
         return;
       }
+      if (mod && key === "w" && !modal) {
+        e.preventDefault();
+        void closeTab();
+        return;
+      }
       if (textInput || modal) return;
+      if (e.ctrlKey && e.key === "Tab") {
+        e.preventDefault();
+        const ids = [...editor.tabs.keys()];
+        const i = ids.indexOf(editor.state.sessionId);
+        void activate(
+          ids[(i + (e.shiftKey ? -1 : 1) + ids.length) % ids.length],
+        );
+        return;
+      }
+      const canvasFocus =
+        !!target.closest(".canvas-wrap") || target === document.body;
+      if (!canvasFocus && !(mod && ["n", "o"].includes(key))) return;
+      const mind = editor.state.doc.objects.find(
+        (o) =>
+          editor.state.selection.includes(o.id) && o.type === "shape" && o.mind,
+      );
+      if (!mod && mind && (e.key === "Tab" || e.key === "Enter")) {
+        e.preventDefault();
+        editor.topic(e.key === "Enter");
+        return;
+      }
       if (mod) {
         const commands: Record<string, () => void> = {
           z: () => (e.shiftKey ? editor.redo() : editor.undo()),
@@ -249,7 +344,7 @@ export default function App({ initial }: { initial: Session }) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [file, error, importImage]);
+  }, [file, error, importImage, activate, closeTab]);
   const backupText =
     backup.state === "saved"
       ? "Рабочая копия записана"
@@ -261,9 +356,8 @@ export default function App({ initial }: { initial: Session }) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
+        <div className="brand" title="Axon" aria-label="Axon">
           <Logo />
-          <span>Axon</span>
         </div>
         <div className="header-separator" />
         <Menu
@@ -310,31 +404,6 @@ export default function App({ initial }: { initial: Session }) {
             </>
           )}
         </Menu>
-        <div className="document-title">
-          <input
-            aria-label="Название документа"
-            value={s.doc.title}
-            maxLength={200}
-            onChange={(e) => {
-              const title = e.target.value || "Без названия";
-              editor.change((doc) => ({ ...doc, title }));
-            }}
-          />
-          <span className={`save-status ${dirty ? "unsaved" : ""}`}>
-            {dirty ? (
-              <Circle size={7} fill="currentColor" />
-            ) : (
-              <Check size={12} />
-            )}
-            <span>
-              {dirty
-                ? "Есть изменения"
-                : fileState.path
-                  ? "Файл сохранён"
-                  : "Новый документ"}
-            </span>
-          </span>
-        </div>
         <div className="header-actions">
           <div className="history-buttons">
             <IconButton
@@ -361,14 +430,15 @@ export default function App({ initial }: { initial: Session }) {
             <Save size={18} />
           </IconButton>
           <button
-            className="primary-button export-button"
+            className="icon-button"
+            title="Экспорт"
+            aria-label="Экспорт"
             onClick={() => {
               editor.endText();
               setExports(true);
             }}
           >
             <Download size={16} />
-            Экспорт
           </button>
           <IconButton
             title="Настройки"
@@ -379,10 +449,86 @@ export default function App({ initial }: { initial: Session }) {
           </IconButton>
         </div>
       </header>
-      <main className={`workspace ${inspector ? "has-inspector" : ""}`}>
+      <div className="tabbar">
+        <IconButton title="Рабочая папка" onClick={() => void showFolder()}>
+          <FolderOpen size={17} />
+        </IconButton>
+        <div className="document-tabs" role="tablist" aria-label="Документы">
+          {[...editor.tabs].map(([id, tab]) => (
+            <div
+              key={id}
+              className={
+                id === s.sessionId ? "document-tab active" : "document-tab"
+              }
+            >
+              <button
+                role="tab"
+                aria-selected={id === s.sessionId}
+                title={tab.session.path ?? "Новый документ"}
+                onClick={() => void activate(id)}
+              >
+                {editor.isDirty(id) ? "● " : ""}
+                {documentName(tab.session)}
+                {tab.session.path &&
+                [...editor.tabs.values()].some(
+                  (t) =>
+                    t !== tab &&
+                    t.session.path?.split(/[\\/]/).at(-1) ===
+                      tab.session.path?.split(/[\\/]/).at(-1),
+                )
+                  ? " · " + tab.session.path.split(/[\\/]/).at(-2)
+                  : ""}
+                {tab.session.unavailable ? " · файл недоступен" : ""}
+              </button>
+              <button
+                aria-label={"Закрыть вкладку " + documentName(tab.session)}
+                title="Закрыть вкладку"
+                onClick={() => void closeTab(id)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <IconButton title="Новая вкладка" onClick={() => void file("new")}>
+          <Plus size={16} />
+        </IconButton>
+      </div>
+      {folder && (
+        <div className="folder-list panel">
+          <div className="property-row">
+            <strong title={folder.path ?? ""}>
+              {folder.path?.split(/[\\/]/).at(-1) ?? "Рабочая папка"}
+            </strong>
+            <IconButton
+              title="Закрыть список папки"
+              onClick={() => setFolder(null)}
+            >
+              <X size={16} />
+            </IconButton>
+          </div>
+          <button onClick={() => void showFolder(true)}>Выбрать папку…</button>
+          {folder.files.map((name, i) => (
+            <button
+              key={name}
+              onClick={() => {
+                setFolder(null);
+                void file("folder", i);
+              }}
+            >
+              {name}
+            </button>
+          ))}
+          {!folder.files.length && (
+            <p className="muted">В папке нет документов Axon</p>
+          )}
+        </div>
+      )}
+      <main className="workspace">
         <section className="canvas-section">
           <Canvas onContext={(x, y) => setContext({ x, y })} error={error} />
           <Toolbar importImage={() => void importImage()} />
+          <Inspector key={s.sessionId} />
           <div className="bottom-left">
             <span className="object-count">
               {s.selection.length
@@ -404,57 +550,83 @@ export default function App({ initial }: { initial: Session }) {
             </span>
           </div>
           <div className="navigation panel">
-            <IconButton
-              title="Уменьшить"
-              onClick={() => editor.zoom(s.camera.zoom / 1.2)}
-            >
-              <Minus size={16} />
-            </IconButton>
-            <button
-              className="zoom-value"
-              title="Масштаб 100%"
-              onClick={() => editor.zoom(1)}
-            >
-              {Math.round(s.camera.zoom * 100)}%
-            </button>
-            <IconButton
-              title="Увеличить"
-              onClick={() => editor.zoom(s.camera.zoom * 1.2)}
-            >
-              <Plus size={16} />
-            </IconButton>
-            <div className="tool-divider" />
-            <IconButton
-              title="Показать всё · Shift + 1"
-              onClick={() => editor.fit()}
-            >
-              <Maximize size={17} />
-            </IconButton>
-            <IconButton
-              title="Приблизить выделение · Shift + 2"
-              disabled={!s.selection.length}
-              onClick={() => editor.fit(true)}
-            >
-              <Scan size={18} />
-            </IconButton>
+            {s.viewport.w < 900 ? (
+              <Menu
+                label="Масштаб и навигация"
+                trigger={
+                  <>
+                    {Math.round(s.camera.zoom * 100)}% <ChevronDown size={14} />
+                  </>
+                }
+              >
+                <MenuItem onSelect={() => editor.zoom(s.camera.zoom / 1.2)}>
+                  Уменьшить
+                </MenuItem>
+                <MenuItem onSelect={() => editor.zoom(1)}>
+                  Масштаб 100%
+                </MenuItem>
+                <MenuItem onSelect={() => editor.zoom(s.camera.zoom * 1.2)}>
+                  Увеличить
+                </MenuItem>
+                <Separator />
+                <MenuItem shortcut="Shift + 1" onSelect={() => editor.fit()}>
+                  Показать всё
+                </MenuItem>
+                <MenuItem
+                  shortcut="Shift + 2"
+                  disabled={!s.selection.length}
+                  onSelect={() => editor.fit(true)}
+                >
+                  Приблизить выделение
+                </MenuItem>
+              </Menu>
+            ) : (
+              <>
+                <IconButton
+                  title="Уменьшить"
+                  onClick={() => editor.zoom(s.camera.zoom / 1.2)}
+                >
+                  <Minus size={16} />
+                </IconButton>
+                <button
+                  className="zoom-value"
+                  title="Масштаб 100%"
+                  onClick={() => editor.zoom(1)}
+                >
+                  {Math.round(s.camera.zoom * 100)}%
+                </button>
+                <IconButton
+                  title="Увеличить"
+                  onClick={() => editor.zoom(s.camera.zoom * 1.2)}
+                >
+                  <Plus size={16} />
+                </IconButton>
+                <div className="tool-divider" />
+                <IconButton
+                  title="Показать всё · Shift + 1"
+                  onClick={() => editor.fit()}
+                >
+                  <Maximize size={17} />
+                </IconButton>
+                <IconButton
+                  title="Приблизить выделение · Shift + 2"
+                  disabled={!s.selection.length}
+                  onClick={() => editor.fit(true)}
+                >
+                  <Scan size={18} />
+                </IconButton>
+              </>
+            )}
           </div>
           <div className="canvas-utilities">
-            {!inspector && (
-              <IconButton
-                title="Показать свойства"
-                onClick={() => setInspector(true)}
-              >
-                <PanelRightOpen size={18} />
-              </IconButton>
-            )}
             <IconButton title="Горячие клавиши" onClick={() => setHelp(true)}>
               <CircleHelp size={18} />
             </IconButton>
           </div>
         </section>
-        {inspector && <Inspector onHide={() => setInspector(false)} />}
       </main>
       <Settings open={settings} onClose={() => setSettings(false)} />
+      <TooltipLayer />
       <Help open={help} onClose={() => setHelp(false)} />
       <ExportDialog
         open={exports}

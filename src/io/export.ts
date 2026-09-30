@@ -1,5 +1,6 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import type { AxonDocument, Bounds } from "../model/document";
+import { expandSelection } from "../model/operations";
 import {
   contentBounds,
   primitives,
@@ -16,17 +17,18 @@ const escape = (s: string) =>
 function svgPrimitive(p: Primitive): string {
   return p.type === "image"
     ? `<image x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" xlink:href="${p.href}"/>`
-    : `<path d="${p.d}" fill="${p.fill}" stroke="${p.stroke}" stroke-width="${p.width}" stroke-linecap="round" stroke-linejoin="round"${p.dash ? ' stroke-dasharray="8 6"' : ""}/>`;
+    : `<path d="${p.d}" fill="${p.fill}" stroke="${p.stroke}" stroke-width="${p.width}" stroke-linecap="${p.cap ?? "round"}" stroke-linejoin="round"${p.dash ? ' stroke-dasharray="8 6"' : ""}/>`;
 }
 export function exportScene(
   doc: AxonDocument,
   ids: string[],
   options: ExportOptions,
 ) {
+  const selected = new Set(expandSelection(doc, ids));
   const objects =
     options.scope === "all"
       ? doc.objects
-      : doc.objects.filter((o) => ids.includes(o.id));
+      : doc.objects.filter((o) => selected.has(o.id));
   const b = contentBounds(doc, objects);
   if (!b)
     throw new Error(

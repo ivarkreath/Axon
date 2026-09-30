@@ -20,7 +20,7 @@ npm run build
 npm start
 ```
 
-`npm start` запускает последнюю сборку. Если в окружении установлен `ELECTRON_RUN_AS_NODE`, удалите его для запуска Electron (dev-скрипт делает это сам).
+`npm start` запускает development runtime Electron с последними dist/dist-electron. Это проверка исходников, а пользовательское production-приложение находится по постоянному пути ниже. Если в окружении установлен `ELECTRON_RUN_AS_NODE`, удалите его для запуска Electron (dev-скрипт делает это сам).
 
 ## Desktop-проверки
 
@@ -44,15 +44,22 @@ PDF дополнительно растеризуется через незав�
 ## Дистрибутивы
 
 ```sh
-npm run package:win
 npm run dist:win
 npm run dist:mac
 ```
 
-- Windows: `release/win-unpacked/Axon.exe`; NSIS installer `release/Axon Setup 0.1.0.exe`.
+- Windows x64: единственная production-команда `npm run dist:win`; постоянный запуск `release/win-unpacked/Axon.exe`, в этой рабочей копии **`D:\Axon\release\win-unpacked\Axon.exe`**. `package:win` оставлен только как alias этой же команды. Installer NSIS больше не создаётся этим pipeline; старый установщик не служит обновлением launch EXE.
 - macOS: DMG/ZIP в `release/`; сборку выполнять на macOS после `npm ci` и загрузки правильного Electron runtime.
 - `electronDist` указывает на локальный `node_modules/electron/dist`; не копируйте Windows runtime на Mac.
 - Подпись Windows, Developer ID и notarization macOS требуют учётных данных. Для macOS настроена локальная подпись ad-hoc (`identity: "-"`); она не подтверждает разработчика через Apple и не заменяет notarization.
+
+`scripts/publish-windows.mjs` использует текущий electron-builder, appId `app.axon.desktop`, productName `Axon`, runtime и обычный userData без изменений. Выполняются lint, все unit-тесты, build (включая typecheck), упаковка во внутреннюю `release/.windows-build/stage`, аудит ASAR и реальный запуск staging EXE с тестовым профилем. В ASAR запрещены локальные агентские файлы, тесты, документы пользователя, recovery и секреты. Перед заменой проверяется, что канонический Axon не запущен. Каталоги должны находиться внутри release и не быть ссылками.
+
+Успешно подготовленный комплект заменяет всю `release/win-unpacked` переименованием каталогов на том же диске. Предыдущий комплект временно хранится в служебном `release/.windows-build/previous`; при ошибке замены/проверки запуска возвращается на постоянный путь. После успешного запуска именно канонического EXE предыдущий комплект удаляется. `build-info.json` хранит время, команду и SHA-256 app.asar. Тест запуска использует отдельный AXON_TEST_DATA и не меняет обычные настройки/вкладки. Ошибка отката явно сообщает путь сохранённого предыдущего комплекта; при наличии unresolved previous новая публикация запрещена.
+
+Перед заменой перечисляются файлы старого комплекта: пользовательские .axon/изображения/экспорты и неизвестные дополнительные файлы блокируют публикацию до их переноса владельцем. Скрипт не удаляет их вместе с предыдущей версией. Тесты зависимостей явно исключены из build.files; аудит проверяет и ASAR, и внешние файлы. CLI использует `--publish never` и не публикует сборку в интернете.
+
+При следующем обновлении сохраните работу, закройте Axon и выполните из корня `npm run dist:win`. Дождитесь `UPDATED AND LAUNCHED`, затем используйте тот же EXE или ярлык на него. При занятых файлах нет принудительного kill или альтернативного пользовательского EXE: устраните указанную причину и повторите команду. Не создавайте соседние test/fixed/new/versioned приложения и не копируйте отдельно EXE без ресурсов. DLL, locales, ресурсы и helper-файлы — части одного приложения. Документы, рабочая папка и userData не очищаются.
 
 Workflow `.github/workflows/macos-release.yml` запускается вручную через GitHub Actions. Он собирает DMG/ZIP на отдельных macOS-runner: `macos-15` для arm64 и `macos-15-intel` для x64. После тестов модельного слоя проверяются DMG, распакованный ZIP, подпись и запуск `Axon.app` через `tests/mac-packaged.mjs`. Только при успехе обеих архитектур создаётся отдельный предварительный релиз с файлами и SHA-256. Существующие релизы не изменяются. Журналы и снимки сохраняются как Actions artifacts.
 

@@ -19,10 +19,10 @@ const page = await app.firstWindow();
 const passed = [];
 try {
   await page.getByRole("button", { name: "Файл", exact: true }).waitFor();
-  await page.locator('[data-object-id="note"]').first().click();
   await page
-    .getByRole("button", { name: "Редактировать текст", exact: true })
+    .getByRole("button", { name: "Показать всё · Shift + 1", exact: true })
     .click();
+  await page.locator('[data-object-id="note"]').first().dblclick();
   await page
     .getByRole("textbox", { name: "Текст объекта" })
     .fill("Последний ввод перед закрытием");
@@ -72,8 +72,14 @@ try {
   const recovery = JSON.parse(
     await readFile(path.join(data, "recovery.json"), "utf8"),
   );
-  assert.deepEqual(recovery.document, fixture);
-  passed.push("discard on close restores only last manually saved content");
+  assert.ok(!recovery.tabs.some((t) => t.sessionId === state.sessionId));
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(out, "acceptance.axon"), "utf8")),
+    fixture,
+  );
+  passed.push(
+    "discard on close removes the working copy and preserves the saved file",
+  );
   await writeFile(
     path.join(out, "close-results.json"),
     JSON.stringify(passed, null, 2),
