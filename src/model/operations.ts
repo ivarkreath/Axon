@@ -12,34 +12,52 @@ export function expandSelection(
   descendants = true,
 ): string[] {
   const selected = new Set(ids);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const groups = new Set(
-      doc.objects
-        .filter((o) => selected.has(o.id))
-        .map((o) => o.groupId)
-        .filter(Boolean),
-    );
-    for (const o of doc.objects) {
-      if (selected.has(o.id)) continue;
-      if (
-        (o.groupId && groups.has(o.groupId)) ||
-        (descendants &&
-          o.type === "shape" &&
-          o.mind?.parentId &&
-          selected.has(o.mind.parentId)) ||
-        (descendants &&
-          o.type === "connector" &&
-          o.mindBranch &&
-          selected.has(o.mindBranch) &&
-          o.start.type === "bound" &&
-          selected.has(o.start.nodeId))
-      ) {
-        selected.add(o.id);
-        changed = true;
+  if (!selected.size) return [];
+  const byId = new Map(doc.objects.map((o) => [o.id, o]));
+  const groups = new Map<string, string[]>();
+  const children = new Map<string, string[]>();
+  const branches = new Map<string, Extract<AxonObject, { type: "connector" }>[]>();
+  for (const o of doc.objects) {
+    if (o.groupId) {
+      const group = groups.get(o.groupId);
+      if (group) group.push(o.id);
+      else groups.set(o.groupId, [o.id]);
+    }
+    if (!descendants) continue;
+    if (o.type === "shape" && o.mind?.parentId) {
+      const list = children.get(o.mind.parentId);
+      if (list) list.push(o.id);
+      else children.set(o.mind.parentId, [o.id]);
+    }
+    if (o.type === "connector" && o.mindBranch && o.start.type === "bound") {
+      for (const id of [o.mindBranch, o.start.nodeId]) {
+        const list = branches.get(id);
+        if (list) list.push(o);
+        else branches.set(id, [o]);
       }
     }
+  }
+  const queue = [...selected];
+  const add = (id: string) => {
+    if (selected.has(id)) return;
+    selected.add(id);
+    queue.push(id);
+  };
+  for (let i = 0; i < queue.length; i++) {
+    const id = queue[i];
+    const groupId = byId.get(id)?.groupId;
+    if (groupId) {
+      for (const member of groups.get(groupId) ?? []) add(member);
+      groups.delete(groupId);
+    }
+    for (const child of children.get(id) ?? []) add(child);
+    for (const branch of branches.get(id) ?? [])
+      if (
+        selected.has(branch.mindBranch!) &&
+        branch.start.type === "bound" &&
+        selected.has(branch.start.nodeId)
+      )
+        add(branch.id);
   }
   return doc.objects.filter((o) => selected.has(o.id)).map((o) => o.id);
 }

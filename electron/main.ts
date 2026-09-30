@@ -9,7 +9,7 @@ import {
   nativeImage,
   type IpcMainInvokeEvent,
 } from "electron";
-import { readFile, readdir, realpath, rm, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
@@ -26,6 +26,7 @@ import {
   type ViewState,
 } from "../src/shared/contracts";
 import { atomicWrite } from "./storage";
+import { RecoveryWriter } from "./recovery";
 import { FileWorkspace, type FileTab } from "./workspace";
 import { errorMessage } from "../src/shared/errors";
 import { documentName } from "../src/shared/documentName";
@@ -41,8 +42,6 @@ let fileBusy = false;
 let closing = false;
 let ready = false;
 let closePending = false;
-let backupTimer: ReturnType<typeof setTimeout> | undefined;
-let writeQueue: Promise<void> = Promise.resolve();
 let settingsQueue: Promise<void> = Promise.resolve();
 const dataFile = (name: string) => path.join(app.getPath("userData"), name);
 const devURL = process.env.AXON_DEV_URL;
@@ -73,6 +72,7 @@ const tabId = (raw: unknown) =>
 const emitBackup = (status: BackupStatus) => {
   if (win && !win.isDestroyed()) win.webContents.send("axon:backup", status);
 };
+const recovery = new RecoveryWriter(dataFile("recovery.json"), emitBackup);
 async function saveSettings() {
   const snapshot = JSON.stringify({
     preferences,
@@ -88,41 +88,20 @@ function remember(file: string) {
   recents = [file, ...recents.filter((p) => p !== file)].slice(0, 8);
 }
 function enqueueBackup() {
-  clearTimeout(backupTimer);
   if (!preferences.restoreSession) {
+    recovery.cancel();
     emitBackup({ state: "off" });
     return;
   }
-  emitBackup({ state: "pending" });
-  backupTimer = setTimeout(() => {
-    const snapshot = JSON.stringify(workspace.snapshot());
-    writeQueue = writeQueue
-      .catch(() => {})
-      .then(() => atomicWrite(dataFile("recovery.json"), snapshot));
-    writeQueue.then(
-      () => emitBackup({ state: "saved", time: new Date().toISOString() }),
-      () =>
-        emitBackup({
-          state: "error",
-          message: "Не удалось записать рабочую копию",
-        }),
-    );
-  }, 800);
+  recovery.schedule(() => workspace.snapshot());
 }
 async function clearRecovery() {
-  clearTimeout(backupTimer);
-  await writeQueue.catch(() => {});
-  await rm(dataFile("recovery.json"), { force: true });
+  await recovery.persist(null);
 }
 async function persistRecovery(exclude = new Set<string>()) {
-  clearTimeout(backupTimer);
-  await writeQueue.catch(() => {});
-  if (preferences.restoreSession)
-    await atomicWrite(
-      dataFile("recovery.json"),
-      JSON.stringify(workspace.snapshot(exclude)),
-    );
-  else await rm(dataFile("recovery.json"), { force: true });
+  await recovery.persist(
+    preferences.restoreSession ? () => workspace.snapshot(exclude) : null,
+  );
 }
 async function save(tab: FileTab, as = false): Promise<boolean> {
   const snapshot = tab.document;
@@ -504,10 +483,11 @@ app.whenReady().then(async () => {
   });
   handle("axon:preferences", async (raw) => {
     preferences = preferencesSchema.parse(raw);
+    if (!preferences.restoreSession) recovery.cancel();
     await saveSettings();
     if (!preferences.restoreSession) {
       await clearRecovery();
-      emitBackup({ state: "off" });
+      if (!preferences.restoreSession) emitBackup({ state: "off" });
     } else enqueueBackup();
   });
   handle("axon:import-image", async () => {

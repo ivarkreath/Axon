@@ -9,9 +9,10 @@ it("writes complete documents atomically and rejects corrupt input without chang
   try {
     const file = path.join(dir, "test.axon");
     const d = emptyDocument();
-    await writeDocument(file, d);
+    const savedContent = await writeDocument(file, d);
     expect(await readDocument(file)).toEqual(d);
     const before = await readFile(file, "utf8");
+    expect(savedContent).toBe(before);
     await expect(atomicWrite(dir, "invalid target")).rejects.toThrow();
     expect(await readFile(file, "utf8")).toBe(before);
     await writeFile(path.join(dir, "corrupt.axon"), "{");

@@ -33,4 +33,5 @@ export async function writeDocument(file: string, doc: AxonDocument) {
       "Документ больше 80 МБ. Уменьшите количество изображений или содержимого перед сохранением.",
     );
   await atomicWrite(file, data);
+  return data;
 }

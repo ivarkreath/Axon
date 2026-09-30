@@ -1,6 +1,7 @@
 import { createServer } from "vite";
 import { _electron as electron } from "playwright";
 import path from "node:path";
+import assert from "node:assert/strict";
 const server = await createServer();
 await server.listen();
 const env = {
@@ -27,6 +28,7 @@ try {
     console.log(errors);
     throw error;
   }
+  assert.deepEqual(errors, [], "development renderer errors");
   console.log("PASS development runtime", errors);
 } finally {
   if (app) await app.evaluate(({ app }) => app.exit(0)).catch(() => {});

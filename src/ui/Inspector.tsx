@@ -25,7 +25,8 @@ export function Inspector() {
   const s = useEditor();
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 400, h: 44 });
-  const objects = s.doc.objects.filter((o) => s.selection.includes(o.id));
+  const selection = new Set(s.selection);
+  const objects = s.doc.objects.filter((o) => selection.has(o.id));
   const tool = !s.editing && !["select", "hand"].includes(s.tool);
   const targets = tool
     ? [editor.newObject(s.tool as AxonObject["type"], { x: 0, y: 0 })]

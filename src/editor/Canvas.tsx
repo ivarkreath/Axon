@@ -200,10 +200,11 @@ export function Canvas({
       side: opposite[previewSide],
     };
   }
+  const selectedIds = new Set(s.selection);
   const activeConnector =
     s.tool === "connector" ||
     s.doc.objects.some(
-      (o) => s.selection.includes(o.id) && o.type === "connector",
+      (o) => selectedIds.has(o.id) && o.type === "connector",
     );
   return (
     <div

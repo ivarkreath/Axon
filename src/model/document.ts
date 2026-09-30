@@ -120,6 +120,46 @@ export const documentSchema = z
     const ids = new Set<string>();
     const nodes = new Map(doc.objects.map((o) => [o.id, o]));
     const groups = new Map<string, boolean>();
+    const branchCounts = new Map<string, number>();
+    for (const o of doc.objects)
+      if (o.type === "connector" && o.mindBranch)
+        branchCounts.set(o.mindBranch, (branchCounts.get(o.mindBranch) ?? 0) + 1);
+    type MindIssue = "Повреждённая структура mind map" | "Недопустимый корень mind map" | null;
+    const ancestry = new Map<string, MindIssue>();
+    // Duplicate IDs are rejected below; retain their original traversal diagnostics.
+    const cacheAncestry = nodes.size === doc.objects.length;
+    const mindIssue = (node: Extract<AxonObject, { type: "shape" }>): MindIssue => {
+      const path = new Set<string>();
+      let current = node;
+      let issue: MindIssue = null;
+      for (;;) {
+        if (cacheAncestry && ancestry.has(current.id)) {
+          issue = ancestry.get(current.id)!;
+          break;
+        }
+        path.add(current.id);
+        if (!current.mind?.parentId) {
+          if (current.id !== node.mind!.treeId)
+            issue = "Недопустимый корень mind map";
+          break;
+        }
+        const parent = nodes.get(current.mind.parentId);
+        if (
+          !parent ||
+          parent.type !== "shape" ||
+          !parent.mind ||
+          parent.mind.treeId !== node.mind!.treeId ||
+          path.has(parent.id)
+        ) {
+          issue = "Повреждённая структура mind map";
+          break;
+        }
+        current = parent;
+      }
+      if (cacheAncestry)
+        for (const id of path) ancestry.set(id, issue);
+      return issue;
+    };
     for (const o of doc.objects) {
       if (o.type === "shape" && o.mind) {
         if (doc.version < 3 && (o.mind.side || o.mind.presentation))
@@ -142,35 +182,13 @@ export const documentSchema = z
             code: "custom",
             message: "Несогласованное направление ветви mind map",
           });
-        const seen = new Set([o.id]);
-        let current = o;
-        while (current.mind?.parentId) {
-          const parent = nodes.get(current.mind.parentId);
-          if (
-            !parent ||
-            parent.type !== "shape" ||
-            !parent.mind ||
-            parent.mind.treeId !== o.mind.treeId ||
-            seen.has(parent.id)
-          ) {
-            ctx.addIssue({
-              code: "custom",
-              message: "Повреждённая структура mind map",
-            });
-            break;
-          }
-          seen.add(parent.id);
-          current = parent;
-        }
-        if (current.mind?.parentId === null && current.id !== o.mind.treeId)
+        const issue = mindIssue(o);
+        if (issue)
           ctx.addIssue({
             code: "custom",
-            message: "Недопустимый корень mind map",
+            message: issue,
           });
-        const branches = doc.objects.filter(
-          (c) => c.type === "connector" && c.mindBranch === o.id,
-        );
-        if (branches.length !== (o.mind.parentId ? 1 : 0))
+        if ((branchCounts.get(o.id) ?? 0) !== (o.mind.parentId ? 1 : 0))
           ctx.addIssue({
             code: "custom",
             message: "Отсутствует или повторяется ветвь mind map",
@@ -203,7 +221,7 @@ export const documentSchema = z
           });
         groups.set(o.groupId, o.locked);
       }
-      if (o.type === "image" && !doc.assets[o.assetId])
+      if (o.type === "image" && !Object.hasOwn(doc.assets, o.assetId))
         ctx.addIssue({ code: "custom", message: "Изображение отсутствует" });
       if (o.type === "connector")
         for (const e of [o.start, o.end])

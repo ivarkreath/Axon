@@ -66,11 +66,11 @@ export function layoutTopics(
   if (!root) return doc;
   const children = new Map<string, Node[]>();
   for (const node of nodes)
-    if (node.mind?.parentId)
-      children.set(node.mind.parentId, [
-        ...(children.get(node.mind.parentId) ?? []),
-        node,
-      ]);
+    if (node.mind?.parentId) {
+      const list = children.get(node.mind.parentId);
+      if (list) list.push(node);
+      else children.set(node.mind.parentId, [node]);
+    }
   for (const list of children.values())
     list.sort((a, b) => a.mind!.order - b.mind!.order);
   const spans = new Map<string, number>();
