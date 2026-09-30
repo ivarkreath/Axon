@@ -3,6 +3,7 @@ import { Download, Copy } from "lucide-react";
 import { Modal, Field } from "./components";
 import { editor, useEditor } from "../editor/store";
 import { exportBytes, type ExportOptions } from "../io/export";
+import { documentName } from "../shared/documentName";
 export function ExportDialog({
   open,
   onClose,
@@ -26,18 +27,20 @@ export function ExportDialog({
     setError("");
     try {
       editor.endText();
+      const snapshot = {
+        ...editor.state.doc,
+        title: documentName(
+          editor.tabs.get(editor.state.sessionId)?.session,
+        ).replace(/\.axon$/i, ""),
+      };
       const opts = copy ? { ...options, format: "png" as const } : options;
-      const bytes = await exportBytes(
-        editor.state.doc,
-        editor.state.selection,
-        opts,
-      );
+      const bytes = await exportBytes(snapshot, editor.state.selection, opts);
       if (copy) {
         await window.axon.writePNG(bytes);
         notify("PNG скопирован в буфер обмена");
         onClose();
       } else if (
-        await window.axon.exportFile(opts.format, bytes, editor.state.doc.title)
+        await window.axon.exportFile(opts.format, bytes, snapshot.title)
       ) {
         notify("Экспорт сохранён");
         onClose();

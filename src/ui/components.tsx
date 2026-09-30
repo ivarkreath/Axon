@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { ColorPicker } from "./ColorPicker";
+import { PropertyPopover } from "./PropertyPopover";
 export function IconButton({
   title,
   children,
@@ -143,27 +145,22 @@ export function ColorField({
   return (
     <div className="field">
       <span>{label}</span>
-      <div className="color-field">
-        <input
-          type="color"
-          aria-label={label}
-          value={value === "none" ? "#FFFFFF" : value}
-          onChange={(e) => onChange(e.target.value)}
+      <PropertyPopover
+        label={label}
+        trigger={
+          <span
+            className="color-dot"
+            style={{ background: value === "none" ? "transparent" : value }}
+          />
+        }
+      >
+        <ColorPicker
+          label={label}
+          value={value}
+          onChange={onChange}
+          allowNone={allowNone}
         />
-        <span className="color-value">
-          {value === "none" ? "Нет заливки" : value.toUpperCase()}
-        </span>
-        {allowNone && (
-          <button
-            className={`no-fill ${value === "none" ? "active" : ""}`}
-            aria-label="Без заливки"
-            title="Без заливки"
-            onClick={() => onChange("none")}
-          >
-            ∅
-          </button>
-        )}
-      </div>
+      </PropertyPopover>
     </div>
   );
 }

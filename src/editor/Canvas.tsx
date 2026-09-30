@@ -11,7 +11,9 @@ import {
 import { ObjectView } from "../rendering/ObjectView";
 import { Selection } from "../rendering/Selection";
 import { labelArea } from "../rendering/primitives";
-import { isLight } from "../model/document";
+import { isLight, isTextTopic } from "../model/document";
+import { topicSide } from "../model/mindmap";
+import { nextObject, opposite, type Side } from "../model/quickCreate";
 export function Canvas({
   onContext,
   error,
@@ -24,7 +26,15 @@ export function Canvas({
     svg = useRef<SVGSVGElement>(null),
     space = useRef(false);
   const [panning, setPanning] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [previewSide, setPreviewSide] = useState<Side | null>(null);
   const gestures = useGestures(space);
+  useEffect(() => {
+    editor.cancelGesture = gestures.cancel;
+    return () => {
+      editor.cancelGesture = null;
+    };
+  });
   const text = useRef<HTMLTextAreaElement>(null);
   const lastHit = useRef<string | null>(null);
   const editing = s.doc.objects.find((o) => o.id === s.editing);
@@ -60,9 +70,10 @@ export function Canvas({
   }, []);
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      if (document.querySelector(".property-popup")) return;
       if (
         (e.target as HTMLElement).closest(
-          'input,textarea,select,[contenteditable="true"],[role="dialog"]',
+          'input,textarea,select,button,[contenteditable="true"],[role="dialog"],[role="menu"],.context-properties',
         )
       )
         return;
@@ -104,6 +115,7 @@ export function Canvas({
   }, [s.editing]);
   async function drop(e: React.DragEvent) {
     e.preventDefault();
+    const sessionId = editor.state.sessionId;
     const files = [...e.dataTransfer.files];
     for (const file of files) {
       if (!["image/png", "image/jpeg"].includes(file.type)) {
@@ -117,6 +129,7 @@ export function Canvas({
           file.type,
         );
         const r = root.current!.getBoundingClientRect();
+        if (editor.state.sessionId !== sessionId) return;
         editor.addImage(
           asset,
           screenToWorld(
@@ -132,6 +145,61 @@ export function Canvas({
   const gridColor = isLight(s.doc.background) ? "#293F592A" : "#B9D1E22A";
   const canvasAccent = isLight(s.doc.background) ? "#146CA4" : "#75C8FF";
   const gridSize = 20 * s.camera.zoom;
+  const source =
+    !s.editing &&
+    !panning &&
+    !s.interacting &&
+    ["select", "connector"].includes(s.tool) &&
+    s.selection.length <= 1
+      ? s.doc.objects.find(
+          (o) =>
+            o.id === hovered &&
+            !o.locked &&
+            !(o.type === "shape" && o.mind) &&
+            (o.type === "shape" || o.type === "sticky"),
+        )
+      : undefined;
+  const mindSource =
+    !s.editing &&
+    !panning &&
+    !s.interacting &&
+    s.tool === "select" &&
+    s.selection.length <= 1
+      ? s.doc.objects.find(
+          (o) =>
+            o.type === "shape" &&
+            o.mind &&
+            !o.locked &&
+            (s.selection[0] === o.id ||
+              (!s.selection.length && o.id === hovered)),
+        )
+      : undefined;
+  const preview =
+    source && previewSide ? nextObject(s.doc, source, previewSide) : null;
+  const previewDoc = preview
+    ? { ...s.doc, objects: [...s.doc.objects, preview] }
+    : s.doc;
+  const previewConnection =
+    preview && source && previewSide
+      ? editor.nodeConnection(source)
+      : null;
+  if (
+    previewConnection?.type === "connector" &&
+    source &&
+    preview &&
+    previewSide
+  ) {
+    previewConnection.start = {
+      type: "bound",
+      nodeId: source.id,
+      side: previewSide,
+    };
+    previewConnection.end = {
+      type: "bound",
+      nodeId: preview.id,
+      side: opposite[previewSide],
+    };
+  }
   const activeConnector =
     s.tool === "connector" ||
     s.doc.objects.some(
@@ -148,6 +216,7 @@ export function Canvas({
         ref={svg}
         className="canvas"
         aria-label="Холст Axon"
+        tabIndex={0}
         style={{
           background: s.doc.background,
           cursor:
@@ -158,13 +227,39 @@ export function Canvas({
                 : "crosshair",
         }}
         onPointerDown={(e) => {
+          e.currentTarget.focus();
           lastHit.current =
             (e.target as Element)
               .closest("[data-object-id]")
               ?.getAttribute("data-object-id") ?? null;
           gestures.onPointerDown(e);
         }}
-        onPointerMove={gestures.onPointerMove}
+        onPointerMove={(e) => {
+          gestures.onPointerMove(e);
+          if (!s.interacting) {
+            const target = (e.target as Element).closest("[data-object-id]");
+            const id = target?.getAttribute("data-object-id");
+            if (id) setHovered(id);
+            else if (source) {
+              const r = e.currentTarget.getBoundingClientRect();
+              const p = screenToWorld(
+                { x: e.clientX - r.left, y: e.clientY - r.top },
+                s.camera,
+              );
+              const margin = 32 / s.camera.zoom;
+              if (
+                p.x < source.x - margin ||
+                p.x > source.x + source.w + margin ||
+                p.y < source.y - margin ||
+                p.y > source.y + source.h + margin
+              )
+                setHovered(null);
+            }
+            setPreviewSide(
+              (e.target as Element).getAttribute("data-connect") as Side | null,
+            );
+          }
+        }}
         onPointerUp={gestures.onPointerUp}
         onPointerCancel={gestures.onPointerCancel}
         onContextMenu={(e) => {
@@ -173,6 +268,7 @@ export function Canvas({
             .closest("[data-object-id]")
             ?.getAttribute("data-object-id");
           if (id && !s.selection.includes(id)) editor.select([id]);
+          if (!id) editor.select([]);
           onContext(e.clientX, e.clientY);
         }}
         onDoubleClick={() => {
@@ -214,12 +310,104 @@ export function Canvas({
               zoom={s.camera.zoom}
             />
           ))}
-          {!s.editing && (
-            <Selection doc={s.doc} ids={s.selection} zoom={s.camera.zoom} />
+          {!s.editing && s.tool !== "stroke" && !(s.interacting && s.tool === "connector") && (
+            <Selection doc={s.doc} ids={s.selection} zoom={s.camera.zoom} showEndpoints={!s.interacting} />
           )}
+          {preview && source && (
+            <g opacity={0.35} pointerEvents="none">
+              <ObjectView object={preview} doc={s.doc} zoom={s.camera.zoom} />
+              {previewConnection && (
+                <ObjectView
+                  object={previewConnection}
+                  doc={previewDoc}
+                  zoom={s.camera.zoom}
+                />
+              )}
+            </g>
+          )}
+          {source &&
+            sides.map((side) => {
+              const p = anchor(source, side),
+                offset = 18 / s.camera.zoom;
+              return (
+                <circle
+                  key={side}
+                  data-object-id={source.id}
+                  data-connect={side}
+                  cx={
+                    p.x +
+                    (side === "right" ? offset : side === "left" ? -offset : 0)
+                  }
+                  cy={
+                    p.y +
+                    (side === "bottom" ? offset : side === "top" ? -offset : 0)
+                  }
+                  r={6 / s.camera.zoom}
+                  fill={previewSide === side ? canvasAccent : s.doc.background}
+                  stroke={canvasAccent}
+                  strokeWidth={1.5 / s.camera.zoom}
+                  style={{ cursor: "crosshair" }}
+                />
+              );
+            })}
+          {mindSource?.type === "shape" &&
+            (mindSource.mind?.parentId
+              ? [topicSide(s.doc, mindSource)]
+              : (["left", "right"] as const)
+            ).map((side) => {
+              const p = anchor(mindSource, side),
+                x = p.x + (side === "right" ? 20 : -20) / s.camera.zoom;
+              return (
+                <g
+                  key={side}
+                  data-object-id={mindSource.id}
+                  data-mind-add={side}
+                  role="button"
+                  aria-label={
+                    side === "left"
+                      ? "Добавить тему слева"
+                      : "Добавить тему справа"
+                  }
+                  tabIndex={0}
+                  style={{ cursor: "pointer" }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      editor.topic(
+                        false,
+                        false,
+                        undefined,
+                        side,
+                        mindSource.id,
+                      );
+                    }
+                  }}
+                >
+                  <circle
+                    cx={x}
+                    cy={p.y}
+                    r={10 / s.camera.zoom}
+                    fill={s.doc.background}
+                    stroke={canvasAccent}
+                    strokeWidth={1 / s.camera.zoom}
+                  />
+                  <path
+                    d={`M${x - 4 / s.camera.zoom},${p.y}h${8 / s.camera.zoom}M${x},${p.y - 4 / s.camera.zoom}v${8 / s.camera.zoom}`}
+                    stroke={canvasAccent}
+                    strokeWidth={1.5 / s.camera.zoom}
+                    pointerEvents="none"
+                  />
+                </g>
+              );
+            })}
           {activeConnector &&
             s.doc.objects
-              .filter((o) => o.type === "shape" || o.type === "sticky")
+              .filter(
+                (o) =>
+                  (o.type === "shape" || o.type === "sticky") &&
+                  (o.id === hovered || s.interacting),
+              )
               .flatMap((o) =>
                 sides.map((side) => {
                   const p = anchor(o, side);
@@ -294,11 +482,20 @@ export function Canvas({
         <textarea
           ref={text}
           aria-label="Текст объекта"
-          className="canvas-text"
+          className={
+            isTextTopic(editing) ? "canvas-text topic-text" : "canvas-text"
+          }
           maxLength={20000}
           value={editing.text}
           onChange={(e) => editor.updateText(e.target.value)}
-          onBlur={() => editor.endText()}
+          onBlur={(e) => {
+            if (
+              !(e.relatedTarget as HTMLElement | null)?.closest(
+                ".context-properties",
+              )
+            )
+              editor.endText();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.stopPropagation();
@@ -310,8 +507,14 @@ export function Canvas({
             outlineColor: canvasAccent,
             left: textPosition.x,
             top: textPosition.y,
-            width: Math.max(area.w * s.camera.zoom, 120),
-            height: Math.max(area.h * s.camera.zoom, 48),
+            width: Math.max(
+              area.w * s.camera.zoom,
+              isTextTopic(editing) ? 1 : 120,
+            ),
+            height: Math.max(
+              area.h * s.camera.zoom,
+              isTextTopic(editing) ? 1 : 48,
+            ),
             fontFamily:
               editing.style.font === "mono" ? "Axon Mono" : "Axon Sans",
             fontSize: editing.style.fontSize * s.camera.zoom,

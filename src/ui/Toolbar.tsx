@@ -3,6 +3,8 @@ import {
   Square,
   Circle,
   Diamond,
+  Triangle,
+  Network,
   Database,
   MessageSquare,
   Spline,
@@ -12,6 +14,7 @@ import {
   ImagePlus,
   Hand,
   ChevronDown,
+  Ellipsis,
 } from "lucide-react";
 import { editor, useEditor, type Tool } from "../editor/store";
 import { IconButton, Menu, MenuItem } from "./components";
@@ -20,11 +23,13 @@ const shapes = [
   ["rect", "Прямоугольник", Square],
   ["ellipse", "Эллипс", Circle],
   ["diamond", "Ромб", Diamond],
+  ["triangle", "Треугольник", Triangle],
   ["database", "База данных", Database],
   ["callout", "Выноска", MessageSquare],
 ] as const;
 export function Toolbar({ importImage }: { importImage: () => void }) {
   const s = useEditor();
+  const compact = s.viewport.w < 900;
   const tools = [
     ["select", "Выбор · V", MousePointer2],
     ["connector", "Соединение · L", Spline],
@@ -47,6 +52,15 @@ export function Toolbar({ importImage }: { importImage: () => void }) {
         <MousePointer2 size={20} />
       </IconButton>
       <div className="tool-divider" />
+      {!compact && (
+        <IconButton
+          title="Создать mind map"
+          active={s.tool === "mindmap"}
+          onClick={() => editor.setTool("mindmap")}
+        >
+          <Network size={20} />
+        </IconButton>
+      )}
       <div className="shape-tool">
         <IconButton
           title="Фигура · R"
@@ -64,22 +78,27 @@ export function Toolbar({ importImage }: { importImage: () => void }) {
           ))}
         </Menu>
       </div>
-      {tools.slice(1, 5).map(([tool, title, Icon]) => (
+      {tools
+        .slice(1, 5)
+        .filter(([tool]) => !compact || tool !== "sticky")
+        .map(([tool, title, Icon]) => (
+          <IconButton
+            key={tool}
+            title={title}
+            active={s.tool === tool}
+            onClick={() => editor.setTool(tool as Tool)}
+          >
+            <Icon size={20} />
+          </IconButton>
+        ))}
+      {!compact && (
         <IconButton
-          key={tool}
-          title={title}
-          active={s.tool === tool}
-          onClick={() => editor.setTool(tool as Tool)}
+          title="Вставить изображение · Ctrl/Cmd + Shift + I"
+          onClick={importImage}
         >
-          <Icon size={20} />
+          <ImagePlus size={20} />
         </IconButton>
-      ))}
-      <IconButton
-        title="Вставить изображение · Ctrl/Cmd + Shift + I"
-        onClick={importImage}
-      >
-        <ImagePlus size={20} />
-      </IconButton>
+      )}
       <div className="tool-divider" />
       <IconButton
         title="Перемещение холста · H"
@@ -88,6 +107,22 @@ export function Toolbar({ importImage }: { importImage: () => void }) {
       >
         <Hand size={20} />
       </IconButton>
+      {compact && (
+        <Menu label="Другие инструменты" trigger={<Ellipsis size={20} />}>
+          <MenuItem onSelect={() => editor.setTool("mindmap")}>
+            <Network size={18} />
+            Mind map
+          </MenuItem>
+          <MenuItem onSelect={() => editor.setTool("sticky")}>
+            <StickyNote size={18} />
+            Стикер · N
+          </MenuItem>
+          <MenuItem onSelect={importImage}>
+            <ImagePlus size={18} />
+            Изображение
+          </MenuItem>
+        </Menu>
+      )}
     </div>
   );
 }

@@ -61,6 +61,7 @@ try {
   assert.equal(connector.start.nodeId, "client");
   assert.equal(connector.end.nodeId, "service");
   note("connector tool binds both ends to cardinal anchors");
+  await page.getByRole("button", { name: "Ещё", exact: true }).click();
   await page
     .getByRole("button", { name: "Редактировать текст", exact: true })
     .click();
@@ -68,13 +69,16 @@ try {
     .getByRole("textbox", { name: "Текст объекта" })
     .fill("Событие\nЗаказ создан");
   await page.getByRole("textbox", { name: "Текст объекта" }).press("Escape");
-  await page.getByLabel("Маршрут").selectOption("straight");
-  await page.getByLabel("Наконечники").selectOption("both");
+  await page.getByRole("button", { name: "Маршрут", exact: true }).click();
+  await page.getByRole("button", { name: "Прямая линия", exact: true }).click();
+  await page.getByRole("button", { name: "Начало линии", exact: true }).click();
+  await page.getByRole("button", { name: "Обычная стрелка", exact: true }).click();
   doc = (await state()).document;
   connector = doc.objects.find((o) => o.id === connector.id);
   assert.equal(connector.text, "Событие\nЗаказ создан");
   assert.equal(connector.route, "straight");
-  assert.equal(connector.arrows, "both");
+  assert.equal(connector.startMarker, "arrow");
+  assert.equal(connector.endMarker ?? (connector.arrows !== "none" ? "arrow" : "none"), "arrow");
   note("connector label, straight route and two arrowheads");
   let handle = await page.locator('rect[data-end="end"]').boundingBox();
   await drag(
@@ -118,9 +122,14 @@ try {
   await page.screenshot({ path: path.join(out, "resize-connector-1366.png") });
   note("resize preserves connector attachment; Alt disables snapping");
   await page
-    .getByRole("button", { name: "Заблокировать", exact: true })
+    .locator('[data-object-id="gateway"]')
+    .first()
+    .click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: "Заблокировать", exact: true })
     .click();
   const lockedDoc = (await state()).document;
+  await page.locator(".canvas").focus();
   await page.keyboard.press("Delete");
   await page.keyboard.press("ArrowRight");
   assert.deepEqual((await state()).document, lockedDoc);
@@ -219,13 +228,16 @@ try {
   const layout = await page.evaluate(() => ({
     width: window.innerWidth,
     overflow: document.documentElement.scrollWidth > window.innerWidth,
-    inspector: document.querySelector(".inspector").getBoundingClientRect()
-      .right,
+    properties:
+      document.querySelector(".context-properties")?.getBoundingClientRect()
+        .right ?? 0,
+    sidebar: !!document.querySelector("aside.inspector"),
     header: document.querySelector(".header-actions").getBoundingClientRect()
       .right,
   }));
   assert.equal(layout.overflow, false);
-  assert.ok(layout.inspector <= layout.width + 1);
+  assert.equal(layout.sidebar, false);
+  assert.ok(layout.properties <= layout.width + 1);
   assert.ok(layout.header <= layout.width);
   note("1366×768 window at 125% UI scale stays within viewport");
   await app.evaluate(({ BrowserWindow, dialog }) => {
@@ -238,7 +250,11 @@ try {
   await page.locator(".canvas").click({ position: { x: 750, y: 600 } });
   await page.keyboard.press("Control+n");
   await settle();
-  await page.getByRole("button", { name: "Светлый", exact: true }).click();
+  await page
+    .locator(".canvas")
+    .click({ button: "right", position: { x: 700, y: 450 } });
+  await page.getByRole("menuitem", { name: "Тема", exact: true }).hover();
+  await page.getByRole("menuitemcheckbox", { name: "Светлая", exact: true }).click();
   await page.screenshot({ path: path.join(out, "empty-light-1366.png") });
   await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].setContentSize(1920, 1080),

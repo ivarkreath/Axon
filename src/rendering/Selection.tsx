@@ -1,13 +1,15 @@
-import { isLight, type AxonDocument } from "../model/document";
+import { isLight, isTextTopic, type AxonDocument } from "../model/document";
 import { endpoint, objectBounds, union } from "../model/geometry";
 export function Selection({
   doc,
   ids,
   zoom,
+  showEndpoints = true,
 }: {
   doc: AxonDocument;
   ids: string[];
   zoom: number;
+  showEndpoints?: boolean;
 }) {
   const objects = doc.objects.filter((o) => ids.includes(o.id));
   const box = union(objects.map((o) => objectBounds(o, doc)));
@@ -28,6 +30,7 @@ export function Selection({
   return (
     <g className="selection" stroke={accent} strokeWidth={1.5 / zoom}>
       {objects.map((o) => {
+        if (o.type === "connector") return null;
         const b = objectBounds(o, doc);
         return (
           <rect
@@ -54,7 +57,25 @@ export function Selection({
           pointerEvents="none"
         />
       )}
+      {objects.length > 1 &&
+        !objects.some((o) => o.locked) &&
+        handles
+          .filter(([name]) => name.length === 2)
+          .map(([name, dx, dy]) => (
+            <rect
+              key={name}
+              data-scale="true"
+              data-handle={name}
+              x={box.x + box.w * dx - size / 2}
+              y={box.y + box.h * dy - size / 2}
+              width={size}
+              height={size}
+              fill="#152531"
+              style={{ cursor: `${name}-resize` }}
+            />
+          ))}
       {o &&
+        !isTextTopic(o) &&
         !o.locked &&
         !o.groupId &&
         ["shape", "sticky", "image", "text"].includes(o.type) &&
@@ -74,6 +95,8 @@ export function Selection({
             />
           ))}
       {o?.type === "connector" &&
+        showEndpoints &&
+        !o.mindBranch &&
         !o.locked &&
         !o.groupId &&
         (["start", "end"] as const).map((key) => {

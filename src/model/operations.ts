@@ -6,17 +6,55 @@ import {
   pruneAssets,
 } from "./document";
 import { endpoint, objectBounds, union } from "./geometry";
-export function expandSelection(doc: AxonDocument, ids: string[]): string[] {
-  const groups = new Set(
-    doc.objects
-      .filter((o) => ids.includes(o.id) && o.groupId)
-      .map((o) => o.groupId),
-  );
-  return doc.objects
-    .filter((o) => ids.includes(o.id) || (o.groupId && groups.has(o.groupId)))
-    .map((o) => o.id);
+export function expandSelection(
+  doc: AxonDocument,
+  ids: string[],
+  descendants = true,
+): string[] {
+  const selected = new Set(ids);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const groups = new Set(
+      doc.objects
+        .filter((o) => selected.has(o.id))
+        .map((o) => o.groupId)
+        .filter(Boolean),
+    );
+    for (const o of doc.objects) {
+      if (selected.has(o.id)) continue;
+      if (
+        (o.groupId && groups.has(o.groupId)) ||
+        (descendants &&
+          o.type === "shape" &&
+          o.mind?.parentId &&
+          selected.has(o.mind.parentId)) ||
+        (descendants &&
+          o.type === "connector" &&
+          o.mindBranch &&
+          selected.has(o.mindBranch) &&
+          o.start.type === "bound" &&
+          selected.has(o.start.nodeId))
+      ) {
+        selected.add(o.id);
+        changed = true;
+      }
+    }
+  }
+  return doc.objects.filter((o) => selected.has(o.id)).map((o) => o.id);
 }
 export function deleteObjects(doc: AxonDocument, ids: string[]): AxonDocument {
+  const expanded = expandSelection(doc, ids);
+  if (
+    doc.objects.some(
+      (o) =>
+        expanded.includes(o.id) &&
+        o.locked &&
+        ((o.type === "shape" && o.mind) ||
+          (o.type === "connector" && o.mindBranch)),
+    )
+  )
+    return doc;
   const removed = new Set(
     expandSelection(doc, ids).filter(
       (id) => !doc.objects.find((o) => o.id === id)?.locked,
@@ -26,7 +64,14 @@ export function deleteObjects(doc: AxonDocument, ids: string[]): AxonDocument {
     ...doc,
     objects: doc.objects.filter(
       (o) =>
-        !removed.has(o.id) &&
+        !(
+          removed.has(o.id) &&
+          !(
+            o.type === "connector" &&
+            o.mindBranch &&
+            !removed.has(o.mindBranch)
+          )
+        ) &&
         !(
           o.type === "connector" &&
           [o.start, o.end].some(
@@ -42,6 +87,7 @@ export function moveObjects(
   delta: Point,
 ): AxonDocument {
   const selected = new Set(expandSelection(doc, ids));
+  if (doc.objects.some((o) => selected.has(o.id) && o.locked)) return doc;
   return {
     ...doc,
     objects: doc.objects.map((o) => {
@@ -67,7 +113,18 @@ export function copySubset(doc: AxonDocument, ids: string[]): AxonDocument {
     )
       selected.add(o.id);
   const objects = doc.objects
-    .filter((o) => selected.has(o.id))
+    .filter(
+      (o) =>
+        selected.has(o.id) &&
+        !(
+          o.type === "connector" &&
+          o.mindBranch &&
+          (o.start.type !== "bound" ||
+            o.end.type !== "bound" ||
+            !selected.has(o.start.nodeId) ||
+            !selected.has(o.end.nodeId))
+        ),
+    )
     .map((o) =>
       o.type === "connector"
         ? {
@@ -81,8 +138,21 @@ export function copySubset(doc: AxonDocument, ids: string[]): AxonDocument {
                 ? { type: "free" as const, ...endpoint(o.end, doc) }
                 : o.end,
           }
-        : o,
+        : o.type === "shape" &&
+            o.mind &&
+            (!o.mind.parentId || !selected.has(o.mind.parentId))
+          ? { ...o, mind: { ...o.mind, parentId: null } }
+          : { ...o },
     );
+  // Copied subtrees become independent trees, including when the source was an internal branch.
+  const map = new Map(objects.map((o) => [o.id, o]));
+  for (const o of objects)
+    if (o.type === "shape" && o.mind) {
+      let root = o;
+      while (root.mind?.parentId)
+        root = map.get(root.mind.parentId) as typeof o;
+      o.mind = { ...o.mind, treeId: root.id };
+    }
   return pruneAssets({ ...doc, objects });
 }
 export function pasteObjects(
@@ -97,6 +167,14 @@ export function pasteObjects(
     const o = structuredClone(original);
     o.id = idMap.get(o.id)!;
     o.locked = false;
+    if (o.type === "shape" && o.mind)
+      o.mind = {
+        ...o.mind,
+        treeId: idMap.get(o.mind.treeId)!,
+        parentId: o.mind.parentId ? idMap.get(o.mind.parentId)! : null,
+      };
+    if (o.type === "connector" && o.mindBranch)
+      o.mindBranch = idMap.get(o.mindBranch);
     if (o.groupId) {
       if (!groupMap.has(o.groupId)) groupMap.set(o.groupId, uid());
       o.groupId = groupMap.get(o.groupId);
@@ -210,9 +288,17 @@ export function alignObjects(
   // Each flat group is an indivisible unit for alignment/distribution.
   const selected = expandSelection(doc, ids);
   const units = new Map<string, AxonObject[]>();
+  const byId = new Map(doc.objects.map((o) => [o.id, o]));
   for (const o of doc.objects)
     if (selected.includes(o.id) && !o.locked && o.type !== "connector") {
-      const key = o.groupId ?? o.id;
+      let root: AxonObject = o;
+      while (
+        root.type === "shape" &&
+        root.mind?.parentId &&
+        selected.includes(root.mind.parentId)
+      )
+        root = byId.get(root.mind.parentId)!;
+      const key = root.groupId ?? root.id;
       units.set(key, [...(units.get(key) ?? []), o]);
     }
   const entries = [...units.values()].map((objects) => ({
