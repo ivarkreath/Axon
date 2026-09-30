@@ -4,6 +4,12 @@ Axon is a desktop canvas for diagrams, mind maps, and visual notes. Arrange idea
 
 The interface is currently in Russian.
 
+## Download for macOS
+
+Download a DMG from [GitHub Releases](https://github.com/ivarkreath/Axon/releases): choose `mac-arm64` for Apple Silicon (M1 and newer) or `mac-x64` for Intel. Open the DMG and drag Axon to Applications. No Node.js installation is needed.
+
+The app currently uses ad-hoc signing, without Apple notarization. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway** for Axon after trying to open it. See [Apple's instructions](https://support.apple.com/en-us/102445).
+
 ## Features
 
 - Freeform canvas with pan, zoom, a grid, and snapping guides.
@@ -78,7 +84,7 @@ npm run dist:mac
 
 DMG and ZIP files appear in **`release/`**, named `Axon-<version>-mac-<arch>.dmg` and `.zip`. Open the DMG and drag Axon to Applications, or extract the ZIP and move `Axon.app` there.
 
-The manual [macOS release workflow](.github/workflows/macos-release.yml) builds and checks Apple Silicon (`arm64`) and Intel (`x64`) packages separately. macOS packaging uses ad-hoc signing, without Apple Developer ID or notarization; macOS may require permission to open the app. Automated checks do not cover every interaction on a physical Mac.
+The [macOS CI and release workflow](.github/workflows/macos-release.yml) builds and checks Apple Silicon (`arm64`) and Intel (`x64`) packages on pushes to `main`, `test`, and `develope`, and pull requests to `main`. Download build-only DMG/ZIP files from the run's **Artifacts**. Push a version tag (for example `v2.0.0-macos`) or run the workflow manually with a new `release_tag` to publish a GitHub prerelease after both architectures pass. The tag must match `package.json`; existing releases are never overwritten. Leave the manual tag empty to build without publishing. See [release setup](docs/development.md#macos-cicd).
 
 ## Data
 
