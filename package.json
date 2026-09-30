@@ -17,6 +17,7 @@
     "test:desktop": "node tests/desktop.mjs",
     "package:win": "npm run dist:win",
     "dist:win": "node scripts/publish-windows.mjs",
+    "dist:win:installer": "npm run dist:win && electron-builder --win nsis --x64 --prepackaged release/win-unpacked --publish never",
     "dist:mac": "npm run build \u0026\u0026 electron-builder --mac dmg zip",
     "test:recovery": "node tests/recovery.mjs",
     "test:exports": "node tests/verify-exports.mjs",
@@ -53,7 +54,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-Setup-${arch}.${ext}"
     },
     "mac": {
       "target": [
