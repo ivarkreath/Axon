@@ -6,6 +6,7 @@ const env = {
   ...process.env,
   AXON_TEST_DATA: path.resolve("artifacts/packaged-data-" + Date.now()),
 };
+const { version } = JSON.parse(await readFile("package.json", "utf8"));
 await mkdir("artifacts", { recursive: true });
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.AXON_DEV_URL;
@@ -26,13 +27,20 @@ try {
     (await page.evaluate(() => window.axon.init())).document.objects.length,
     0,
   );
-  const metadata = await app.evaluate(({ app }) => ({
+  const metadata = await app.evaluate(({ app, BrowserWindow }) => ({
     name: app.getName(),
     version: app.getVersion(),
     packaged: app.isPackaged,
+    preferences:
+      BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences(),
   }));
   assert.equal(metadata.name, "Axon");
+  assert.equal(metadata.version, version);
   assert.equal(metadata.packaged, true);
+  assert.equal(metadata.preferences.contextIsolation, true);
+  assert.equal(metadata.preferences.sandbox, true);
+  assert.equal(metadata.preferences.nodeIntegration, false);
+  delete metadata.preferences;
   await page
     .getByRole("button", { name: "Соединение · L", exact: true })
     .click();
@@ -59,7 +67,9 @@ try {
   }, pdfPath);
   await page.getByRole("button", { name: "Экспорт", exact: true }).click();
   await page.getByRole("button", { name: "PDF Документ", exact: true }).click();
-  await page.getByRole("button", { name: "Сохранить экспорт", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Сохранить экспорт", exact: true })
+    .click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.equal((await readFile(pdfPath)).subarray(0, 5).toString(), "%PDF-");
   assert.deepEqual(errors, [], "packaged renderer errors");

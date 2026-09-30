@@ -4,7 +4,9 @@ Axon is a desktop canvas for diagrams, mind maps, and visual notes. Arrange idea
 
 The interface is currently in Russian.
 
-## Download for macOS
+## Download
+
+**Windows x64:** download `Axon-<version>-Setup-x64.exe` from [GitHub Releases](https://github.com/ivarkreath/Axon/releases) and run the installer. It installs Axon with shortcuts and includes all required files. The installer is currently unsigned, so Windows may display an unknown-publisher warning.
 
 Download a DMG from [GitHub Releases](https://github.com/ivarkreath/Axon/releases): choose `mac-arm64` for Apple Silicon (M1 and newer) or `mac-x64` for Intel. Open the DMG and drag Axon to Applications. No Node.js installation is needed.
 
@@ -72,7 +74,9 @@ Run on Windows x64 after installing dependencies. Save your work and close Axon 
 npm run dist:win
 ```
 
-This runs checks, builds and verifies the application, and replaces `release/win-unpacked/`. Launch **`release/win-unpacked/Axon.exe`**. Keep the whole folder together: the EXE needs its accompanying resources. The current pipeline produces an unsigned application folder, without an installer. `npm run package:win` is an alias for the same command.
+This runs checks, builds and verifies the application, and replaces `release/win-unpacked/`. Launch **`release/win-unpacked/Axon.exe`**. Keep the whole folder together: the EXE needs its accompanying resources. `npm run package:win` is an alias for the same command.
+
+To also produce a distributable Windows installer, run `npm run dist:win:installer`. This uses the verified application folder and writes **`release/Axon-<version>-Setup-x64.exe`**. CI installs this EXE on a disposable Windows runner and tests the installed application before publishing.
 
 ### macOS
 
@@ -84,7 +88,7 @@ npm run dist:mac
 
 DMG and ZIP files appear in **`release/`**, named `Axon-<version>-mac-<arch>.dmg` and `.zip`. Open the DMG and drag Axon to Applications, or extract the ZIP and move `Axon.app` there.
 
-The [macOS CI and release workflow](.github/workflows/macos-release.yml) builds and checks Apple Silicon (`arm64`) and Intel (`x64`) packages on pushes to `main`, `test`, and `develope`, and pull requests to `main`. Download build-only DMG/ZIP files from the run's **Artifacts**. Push a version tag (for example `v2.0.0-macos`) or run the workflow manually with a new `release_tag` to publish a GitHub prerelease after both architectures pass. The tag must match `package.json`; existing releases are never overwritten. Leave the manual tag empty to build without publishing. See [release setup](docs/development.md#macos-cicd).
+The [Desktop CI and release workflow](.github/workflows/macos-release.yml) builds and checks Windows x64, Apple Silicon (`arm64`), and Intel Mac (`x64`) packages on pushes to `main`, `test`, and `develope`, and pull requests to `main`. Download build-only EXE/DMG/ZIP files from the run's **Artifacts**. Push a version tag (for example `v2.0.0-desktop`) or run the workflow manually with a new `release_tag` to publish a GitHub prerelease after all platforms pass. The tag must match `package.json`; existing releases are never overwritten. Leave the manual tag empty to build without publishing. See [release setup](docs/development.md#desktop-cicd).
 
 ## Data
 

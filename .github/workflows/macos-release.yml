@@ -1,4 +1,4 @@
-name: macOS CI and release
+name: Desktop CI and release
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "New release tag, e.g. v2.0.0-macos (empty = build only)"
+        description: "New release tag, e.g. v2.0.0-desktop (empty = build only)"
         required: false
         type: string
 
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_tag }}
+  group: desktop-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_tag }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
@@ -111,9 +111,48 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  windows:
+    name: Windows x64 installer
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run setup:electron
+      - name: Build and verify Windows application and NSIS installer
+        run: npm run dist:win:installer
+      - name: Install EXE and launch installed Axon
+        run: node tests/windows-installer.mjs
+      - name: Save Windows test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-evidence-x64
+          path: |
+            artifacts/packaged-results.json
+            artifacts/packaged-windows.png
+            artifacts/windows-installer.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Save Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-release-x64
+          path: release/*-Setup-x64.exe
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
   publish:
-    name: Publish macOS downloads
-    needs: [prepare, build]
+    name: Publish Windows and macOS downloads
+    needs: [prepare, build, windows]
     if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -125,7 +164,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: macos-release-*
+          pattern: "*-release-*"
           path: release
           merge-multiple: true
       - name: Publish verified files
@@ -142,12 +181,13 @@ jobs:
               test -s "release/Axon-$RELEASE_VERSION-mac-$arch.$ext"
             done
           done
-          (cd release && sha256sum -- *.dmg *.zip > SHA256SUMS.txt)
-          cp docs/releases/macos.md release-notes.md
+          test -s "release/Axon-$RELEASE_VERSION-Setup-x64.exe"
+          (cd release && sha256sum -- *.dmg *.zip *.exe > SHA256SUMS.txt)
+          cp docs/releases/desktop.md release-notes.md
           printf '\nVersion: %s\nCommit: %s\nBuild: %s/%s/actions/runs/%s\n' \
             "$RELEASE_VERSION" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> release-notes.md
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
-            --title "Axon $RELEASE_VERSION — macOS" --notes-file release-notes.md \
+            --title "Axon $RELEASE_VERSION — Windows and macOS" --notes-file release-notes.md \
             --prerelease --draft
-          gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip release/SHA256SUMS.txt
+          gh release upload "$RELEASE_TAG" release/*.exe release/*.dmg release/*.zip release/SHA256SUMS.txt
           gh release edit "$RELEASE_TAG" --draft=false
