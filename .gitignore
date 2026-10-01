@@ -16,3 +16,17 @@ artifacts/
 *.pfx
 .DS_Store
 Thumbs.db
+
+# Internal product documents and review reports (keep local copies)
+/Desktop_Whiteboard_PRD_v2.md
+/docs/prd.md
+/docs/verification.md
+/docs/CODE_REVIEW.md
+
+# Local Codex navigation and GitNexus tooling
+/AGENTS.md
+/.agent/
+/.codex/config.toml
+/.gitnexus/
+/.gitnexusignore
+/.gitnexusrc

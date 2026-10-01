@@ -1,14 +1,65 @@
-import { parse, type Font } from "opentype.js";
+import { parse, type Font, type Path } from "opentype.js";
 import {
   isTextTopic,
   type AxonObject,
   type Bounds,
   type Style,
 } from "../model/document";
+import { union } from "../model/geometry";
+
+// The budgets count retained key characters and path command scalars, not heap
+// bytes. Large one-off strings/outlines bypass the cache instead of evicting it.
+function boundedTextCache<T>(maxEntries: number, maxWeight: number) {
+  const entries = new Map<string, { value: T; weight: number }>();
+  let weight = 0;
+  return {
+    get(key: string) {
+      const entry = entries.get(key);
+      if (!entry) return undefined;
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry.value;
+    },
+    set(key: string, value: T, size: number) {
+      if (size > maxWeight) return;
+      const previous = entries.get(key);
+      if (previous) weight -= previous.weight;
+      entries.delete(key);
+      entries.set(key, { value, weight: size });
+      weight += size;
+      while (entries.size > maxEntries || weight > maxWeight) {
+        const oldest = entries.keys().next().value!;
+        weight -= entries.get(oldest)!.weight;
+        entries.delete(oldest);
+      }
+    },
+    clear() {
+      entries.clear();
+      weight = 0;
+    },
+  };
+}
+const widths = boundedTextCache<number>(2048, 256000);
+const outlines = boundedTextCache<{ path: Path; bounds: Bounds }>(512, 1000000);
+type TextBoundsEntry = {
+  text: string;
+  font: Style["font"];
+  fontSize: number;
+  align: Style["align"];
+  area: Bounds;
+  top: boolean;
+  bounds: Bounds | null;
+};
+// Only scalar extents are retained per live immutable object, never glyph paths
+// or documents. This avoids full-scene LRU thrashing on repeated Fit/export.
+let objectTextBounds = new WeakMap<AxonObject, TextBoundsEntry>();
 const fonts: Partial<Record<"sans" | "mono", Font>> = {};
 export function registerFonts(sans: ArrayBuffer, mono: ArrayBuffer) {
   fonts.sans = parse(sans);
   fonts.mono = parse(mono);
+  widths.clear();
+  outlines.clear();
+  objectTextBounds = new WeakMap();
 }
 export async function loadFonts() {
   const [sans, mono] = await Promise.all(
@@ -26,9 +77,62 @@ export function fontFor(style: Style) {
   return font;
 }
 export function textWidth(text: string, style: Style) {
-  return fontFor(style).getAdvanceWidth(text, style.fontSize, {
+  const key = `${style.font}|${style.fontSize}|${text}`;
+  const cached = widths.get(key);
+  if (cached !== undefined) return cached;
+  const width = fontFor(style).getAdvanceWidth(text, style.fontSize, {
     kerning: true,
   });
+  widths.set(key, width, key.length);
+  return width;
+}
+
+function lineOutline(line: TextLine, style: Style) {
+  const key = `${style.font}|${style.fontSize}|${line.x}|${line.y}|${line.text}`;
+  const cached = outlines.get(key);
+  if (cached) return cached;
+  const path = fontFor(style).getPath(line.text, line.x, line.y, style.fontSize, { kerning: true });
+  const box = path.getBoundingBox();
+  const result = {
+    path,
+    bounds: { x: box.x1, y: box.y1, w: box.x2 - box.x1, h: box.y2 - box.y1 },
+  };
+  outlines.set(key, result, key.length + path.commands.length * 7);
+  return result;
+}
+
+export function textLinePath(line: TextLine, style: Style): string {
+  return lineOutline(line, style).path.toPathData(3);
+}
+
+/** Exact font contour extents, shared by Fit and export without approximation. */
+export function textBounds(
+  object: AxonObject & { text: string },
+  area: Bounds,
+  top = false,
+): Bounds | null {
+  const cached = objectTextBounds.get(object), style = object.style;
+  if (
+    cached && cached.text === object.text && cached.font === style.font &&
+    cached.fontSize === style.fontSize && cached.align === style.align && cached.top === top &&
+    cached.area.x === area.x && cached.area.y === area.y &&
+    cached.area.w === area.w && cached.area.h === area.h
+  )
+    return cached.bounds ? { ...cached.bounds } : null;
+  const bounds = union(layoutText(object.text, area, style, top)
+    .filter((line) => line.text.trim())
+    .map((line) => lineOutline(line, style).bounds)
+    .filter((box) => Number.isFinite(box.x)));
+  objectTextBounds.set(object, {
+    text: object.text,
+    font: style.font,
+    fontSize: style.fontSize,
+    align: style.align,
+    area: { ...area },
+    top,
+    bounds,
+  });
+  return bounds ? { ...bounds } : null;
 }
 export function wrapText(text: string, width: number, style: Style): string[] {
   const result: string[] = [];

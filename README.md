@@ -1,57 +1,97 @@
 # Axon
 
-Локальный desktop-редактор схем и заметок для Windows и macOS. React + TypeScript + Electron, русский интерфейс, редактируемые `.axon`, изображения внутри проекта и экспорт PNG / SVG / PDF. Новый документ пустой; аккаунт и интернет для работы не нужны.
+Axon is a desktop canvas for diagrams, mind maps, and visual notes. Arrange ideas, connect them, and save editable documents or export them for sharing.
 
-## Установка на Mac
+The interface is currently in Russian.
 
-Готовые сборки: [Axon 0.1.0 для macOS](https://github.com/ivarkreath/Axon/releases/tag/v0.1.0-macos).
+## Download for macOS
 
-- **Apple Silicon (серии M):** `Axon-0.1.0-mac-arm64.dmg`.
-- **Intel:** `Axon-0.1.0-mac-x64.dmg`.
+Download a DMG from [GitHub Releases](https://github.com/ivarkreath/Axon/releases): choose `mac-arm64` for Apple Silicon (M1 and newer) or `mac-x64` for Intel. Open the DMG and drag Axon to Applications. No Node.js installation is needed.
 
-Откройте DMG и перетащите Axon в «Программы». Node.js для готового приложения не нужен. В релизе также есть ZIP и контрольные суммы SHA-256. Репозиторий закрытый: для скачивания нужен вход в GitHub с доступом к нему.
+The app currently uses ad-hoc signing, without Apple notarization. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway** for Axon after trying to open it. See [Apple's instructions](https://support.apple.com/en-us/102445).
 
-Обе архитектуры собраны и запущены на macOS в GitHub Actions. Это предварительный релиз с подписью ad-hoc, без Apple Developer ID и notarization; macOS может запросить разрешение на открытие. Подробности проверок и оставшиеся ограничения — в [протоколе](docs/verification.md).
+## Features
 
-## Запуск из исходников
+- Freeform canvas with pan, zoom, a grid, and snapping guides.
+- Shapes, text, sticky notes, freehand drawing, and embedded PNG/JPEG images.
+- Straight, orthogonal, and curved connectors with labels and endpoint markers.
+- Mind maps with branches and automatic layout.
+- Multiple document tabs and a local working folder.
+- Grouping, alignment, locking, copy/paste, and undo/redo.
+- Light, dark, and system themes, with an independent canvas background.
+- PNG, SVG, and PDF export of the whole document or a selection; copy as PNG.
+
+## Requirements
+
+For development and builds:
+
+- Node.js 24 and npm. The release workflow uses Node.js 24; dependencies are locked in `package-lock.json`.
+- Git to clone the repository.
+- Windows x64 for the Windows packaging pipeline, or macOS for the macOS build.
+
+Internet access is needed to download dependencies and build tools. A packaged application does not require Node.js.
+
+## Running from source
+
+In PowerShell on Windows or a terminal on macOS:
 
 ```sh
+git clone https://github.com/ivarkreath/Axon.git
+cd Axon
 npm ci
-npm run setup:electron
 npm run dev
 ```
 
-Требуется Node.js 24. `npm run build` и `npm start` используются для разработки и проверок.
+If installation scripts were disabled and the Electron runtime is missing, run `npm run setup:electron` before starting. Restart the development app after changing Electron main/preload code.
 
-Постоянное production-приложение Windows x64: **`D:\Axon\release\win-unpacked\Axon.exe`** (относительно корня `release/win-unpacked/Axon.exe`). Сохраните работу и закройте Axon, затем выполните **`npm run dist:win`**. Команда проверит код, подготовит весь комплект отдельно, безопасно заменит каноническую папку и проверит запуск этого EXE. При следующем обновлении команда и путь те же; ярлык должен указывать на этот EXE. `package:win` — alias того же pipeline. Установщик и соседние test/fixed/new-копии не создаются; служебные staging и DLL не являются альтернативными приложениями. Подробности и откат — в [разработке](docs/development.md), фактический результат — в [протоколе](docs/verification.md). Windows-копия не подписана; собранные файлы не хранятся в Git.
+## Getting started
 
-## Возможности
+1. Choose a tool in the bottom toolbar and place shapes, text, or a mind map on the canvas.
+2. Use the connector tool or a shape's side handles to connect ideas. Hold Space and drag to pan; use Ctrl/Cmd + mouse wheel to zoom.
+3. Save an editable `.axon` file with Ctrl/Cmd + S. Open or create other documents in separate tabs.
+4. Use the export button to share a PNG, SVG, or PDF.
 
-- Фигуры, текст, стикеры, карандаш и PNG/JPEG; редактирование на холсте.
-- Прямые/угловые/плавные связи с независимыми визуальными окончаниями и подписями; move/resize, группы, блокировки, копирование, порядок и выравнивание.
-- Undo/Redo, привычные клавиши, pan/zoom, направляющие и независимые привязки.
-- New/Open/Save/Save As, последние файлы, безопасная запись и отдельная рабочая копия.
-- Экспорт всего документа или выделения; переносимая кириллица, прозрачный PNG/SVG, копирование PNG.
-- Тёмная, светлая и системная тема отдельно от фона документа.
+## Development
 
-## Проверки и сборка
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start Vite and Electron for development |
+| `npm run typecheck` | Check TypeScript types |
+| `npm run lint` | Run ESLint |
+| `npm test` | Run the Vitest suite |
+| `npm run build` | Build the renderer and Electron code into `dist/` and `dist-electron/` |
+| `npm start` | Run the last build with the development Electron runtime |
+
+## Build
+
+### Windows
+
+Run on Windows x64 after installing dependencies. Save your work and close Axon first:
 
 ```sh
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run test:desktop
-npm run test:interactions
-npm run test:recovery
-npm run test:exports
 npm run dist:win
 ```
 
-`npm run dist:mac` запускается на Mac. Для сборки обеих архитектур и публикации DMG/ZIP есть ручной workflow **macOS release** в GitHub Actions. Windows и macOS проверяются отдельно; результаты — в протоколе проверок. macOS использует локальную подпись ad-hoc; Developer ID и notarization отсутствуют. Windows-сборка не подписана.
+This runs checks, builds and verifies the application, and replaces `release/win-unpacked/`. Launch **`release/win-unpacked/Axon.exe`**. Keep the whole folder together: the EXE needs its accompanying resources. The current pipeline produces an unsigned application folder, without an installer. `npm run package:win` is an alias for the same command.
 
-## Документация
+### macOS
 
-[PRD](docs/prd.md) · [Архитектура](docs/architecture.md) · [Формат документа](docs/document-format.md) · [Поведение редактора](docs/editor-model.md) · [Дизайн-система](docs/design-system.md) · [Разработка](docs/development.md) · [Проверки и ограничения](docs/verification.md).
+Run on macOS with dependencies installed there:
 
-Исходный пользовательский PRD сохранён как `Desktop_Whiteboard_PRD_v2.md`. Тестовая сцена создаётся в `artifacts/acceptance.axon` desktop-тестом и не является стартовым содержимым или библиотекой шаблонов. Лицензии зависимостей: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+```sh
+npm run dist:mac
+```
+
+DMG and ZIP files appear in **`release/`**, named `Axon-<version>-mac-<arch>.dmg` and `.zip`. Open the DMG and drag Axon to Applications, or extract the ZIP and move `Axon.app` there.
+
+The [macOS CI and release workflow](.github/workflows/macos-release.yml) builds and checks Apple Silicon (`arm64`) and Intel (`x64`) packages on pushes to `main`, `test`, and `develope`, and pull requests to `main`. Download build-only DMG/ZIP files from the run's **Artifacts**. Push a version tag (for example `v2.0.0-macos`) or run the workflow manually with a new `release_tag` to publish a GitHub prerelease after both architectures pass. The tag must match `package.json`; existing releases are never overwritten. Leave the manual tag empty to build without publishing. See [release setup](docs/development.md#macos-cicd).
+
+## Data
+
+Documents are local, self-contained `.axon` files with embedded images. No account or cloud service is required. Settings and recovery copies use Electron's application data folder; undo history stays in memory.
+
+## Documentation
+
+Technical documentation (Russian): [development](docs/development.md), [architecture](docs/architecture.md), [document format](docs/document-format.md), [editor behavior](docs/editor-model.md), and [design system](docs/design-system.md).
+
+Dependency and font licenses: [third-party notices](THIRD_PARTY_NOTICES.md) and [Noto font license](public/fonts/OFL.txt).

@@ -27,6 +27,7 @@ import { ExportDialog } from "./ui/ExportDialog";
 import { ContextMenu } from "./ui/ContextMenu";
 import { exportBytes } from "./io/export";
 import { documentName } from "./shared/documentName";
+import type { AxonDocument } from "./model/document";
 
 import type { BackupStatus, FileCommand, Session } from "./shared/contracts";
 export default function App({ initial }: { initial: Session }) {
@@ -52,6 +53,7 @@ export default function App({ initial }: { initial: Session }) {
   );
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const syncedDocuments = useRef(new WeakMap<object, AxonDocument>());
   const [systemDark, setSystemDark] = useState(
     matchMedia("(prefers-color-scheme: dark)").matches,
   );
@@ -76,13 +78,16 @@ export default function App({ initial }: { initial: Session }) {
       if (busyRef.current) return;
       busyRef.current = true;
       setBusy(true);
-      editor.cancelGesture?.();
-      editor.endText();
+      editor.finishOperation();
       const origin = editor.state.sessionId;
+      const snapshot = editor.state.doc;
+      const originTab = editor.tabs.get(origin);
+      const previousSync = originTab && syncedDocuments.current.get(originTab);
+      if (originTab) syncedDocuments.current.set(originTab, snapshot);
       try {
         const result = await window.axon.file(
           command,
-          editor.state.doc,
+          snapshot,
           index,
           origin,
         );
@@ -94,6 +99,10 @@ export default function App({ initial }: { initial: Session }) {
           else notify("Файл сохранён");
         }
       } catch (e) {
+        if (originTab && syncedDocuments.current.get(originTab) === snapshot) {
+          if (previousSync) syncedDocuments.current.set(originTab, previousSync);
+          else syncedDocuments.current.delete(originTab);
+        }
         error(String(e));
       } finally {
         busyRef.current = false;
@@ -104,17 +113,18 @@ export default function App({ initial }: { initial: Session }) {
   );
   const activate = useCallback(
     async (id: string) => {
-      editor.cancelGesture?.();
-      editor.endText();
+      editor.finishOperation();
       const before = editor.state;
       editor.activate(id);
       setContext(null);
       setExports(false);
       try {
-        await window.axon.updateDocument(before.doc, before.sessionId, {
-          camera: before.camera,
-          selection: before.selection,
-        });
+        const tab = editor.tabs.get(before.sessionId);
+        const view = { camera: before.camera, selection: before.selection };
+        if (tab && (syncedDocuments.current.get(tab) ?? tab.session.document) !== before.doc) {
+          await window.axon.updateDocument(before.doc, before.sessionId, view);
+          syncedDocuments.current.set(tab, before.doc);
+        } else await window.axon.updateView(before.sessionId, view);
         await window.axon.activateSession(id);
       } catch (e) {
         error(String(e));
@@ -126,8 +136,7 @@ export default function App({ initial }: { initial: Session }) {
   const closeTab = useCallback(
     async (id = editor.state.sessionId) => {
       if (busyRef.current) return;
-      editor.cancelGesture?.();
-      editor.endText();
+      editor.finishOperation();
       const tab = editor.tabs.get(id);
       if (!tab) return;
       busyRef.current = true;
@@ -183,16 +192,33 @@ export default function App({ initial }: { initial: Session }) {
     }
   }, [notify, error]);
   useEffect(() => {
+    const tab = editor.tabs.get(s.sessionId);
+    if (!tab) return;
+    if (!syncedDocuments.current.has(tab)) syncedDocuments.current.set(tab, tab.session.document);
+    if (s.interacting || syncedDocuments.current.get(tab) === s.doc) return;
     const timer = setTimeout(() => {
+      if (syncedDocuments.current.get(tab) === s.doc) return;
+      syncedDocuments.current.set(tab, s.doc);
       void window.axon
         .updateDocument(s.doc, s.sessionId, {
-          camera: s.camera,
-          selection: s.selection,
+          camera: tab.state.camera, selection: tab.state.selection,
         })
-        .catch((e) => error(String(e)));
+        .catch((e) => {
+          if (syncedDocuments.current.get(tab) === s.doc) syncedDocuments.current.delete(tab);
+          error(String(e));
+        });
     }, 120);
     return () => clearTimeout(timer);
-  }, [s.doc, s.sessionId, s.camera, s.selection, error]);
+  }, [s.doc, s.sessionId, s.interacting, error]);
+  useEffect(() => {
+    if (s.interacting) return;
+    const timer = setTimeout(() => {
+      void window.axon.updateView(s.sessionId, {
+        camera: s.camera, selection: s.selection,
+      }).catch((e) => error(String(e)));
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [s.sessionId, s.camera, s.selection, s.interacting, error]);
   useEffect(() => window.axon.onBackup(setBackup), []);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
@@ -228,8 +254,7 @@ export default function App({ initial }: { initial: Session }) {
         if (["new", "open", "save", "saveAs"].includes(command))
           void file(command as FileCommand);
         if (command === "close") {
-          editor.cancelGesture?.();
-          editor.endText();
+          editor.finishOperation();
           void window.axon
             .close(editor.state.doc, editor.snapshots())
             .catch((e) => error(String(e)));

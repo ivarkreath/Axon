@@ -14,6 +14,7 @@ import { labelArea } from "../rendering/primitives";
 import { isLight, isTextTopic } from "../model/document";
 import { topicSide } from "../model/mindmap";
 import { nextObject, opposite, type Side } from "../model/quickCreate";
+import { MAX_IMAGE_BYTES, MAX_TEXT_LENGTH } from "../shared/limits";
 export function Canvas({
   onContext,
   error,
@@ -31,8 +32,10 @@ export function Canvas({
   const gestures = useGestures(space);
   useEffect(() => {
     editor.cancelGesture = gestures.cancel;
+    editor.finishGesture = gestures.onPointerUp;
     return () => {
       editor.cancelGesture = null;
+      editor.finishGesture = null;
     };
   });
   const text = useRef<HTMLTextAreaElement>(null);
@@ -123,7 +126,7 @@ export function Canvas({
         continue;
       }
       try {
-        if (file.size > 20e6) throw new Error("Изображение больше 20 МБ.");
+        if (file.size > MAX_IMAGE_BYTES) throw new Error("Изображение больше 20 МБ.");
         const asset = await window.axon.decodeImage(
           new Uint8Array(await file.arrayBuffer()),
           file.type,
@@ -200,10 +203,11 @@ export function Canvas({
       side: opposite[previewSide],
     };
   }
+  const selectedIds = new Set(s.selection);
   const activeConnector =
     s.tool === "connector" ||
     s.doc.objects.some(
-      (o) => s.selection.includes(o.id) && o.type === "connector",
+      (o) => selectedIds.has(o.id) && o.type === "connector",
     );
   return (
     <div
@@ -485,7 +489,7 @@ export function Canvas({
           className={
             isTextTopic(editing) ? "canvas-text topic-text" : "canvas-text"
           }
-          maxLength={20000}
+          maxLength={MAX_TEXT_LENGTH}
           value={editing.text}
           onChange={(e) => editor.updateText(e.target.value)}
           onBlur={(e) => {

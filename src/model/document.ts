@@ -1,7 +1,19 @@
 import { z } from "zod";
+import { validateMindMap } from "./mindmapValidation";
+import {
+  MAX_ASSET_BASE64_CHARS,
+  MAX_COORDINATE,
+  MAX_DIMENSION,
+  MAX_DOCUMENT_JSON_CHARS,
+  MAX_DOCUMENT_OBJECTS,
+  MAX_IMAGE_DIMENSION,
+  MAX_STROKE_POINTS,
+  MAX_TEXT_LENGTH,
+} from "../shared/limits";
+export { serializePreparedDocument } from "./serialization";
 
-const coordinate = z.number().finite().min(-1e6).max(1e6);
-const dimension = z.number().finite().min(1).max(100000);
+const coordinate = z.number().finite().min(-MAX_COORDINATE).max(MAX_COORDINATE);
+const dimension = z.number().finite().min(1).max(MAX_DIMENSION);
 const id = z.string().min(1).max(100);
 export const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 export const markerSchema = z.enum(["none", "arrow", "open", "triangle", "circle", "diamond"]);
@@ -31,7 +43,7 @@ const base = {
   groupId: id.optional(),
   style: styleSchema,
 };
-const text = z.string().max(20000);
+const text = z.string().max(MAX_TEXT_LENGTH);
 export const endpointSchema = z.union([
   z.object({ type: z.literal("free"), x: coordinate, y: coordinate }).strict(),
   z
@@ -75,7 +87,7 @@ export const objectSchema = z.discriminatedUnion("type", [
     .object({
       ...base,
       type: z.literal("stroke"),
-      points: z.array(pointSchema).min(1).max(50000),
+      points: z.array(pointSchema).min(1).max(MAX_STROKE_POINTS),
     })
     .strict(),
   z
@@ -99,10 +111,10 @@ export const assetSchema = z
     mime: z.enum(["image/png", "image/jpeg"]),
     data: z
       .string()
-      .max(28e6)
+      .max(MAX_ASSET_BASE64_CHARS)
       .regex(/^[A-Za-z0-9+/]+={0,2}$/),
-    width: z.number().int().positive().max(16384),
-    height: z.number().int().positive().max(16384),
+    width: z.number().int().positive().max(MAX_IMAGE_DIMENSION),
+    height: z.number().int().positive().max(MAX_IMAGE_DIMENSION),
   })
   .strict();
 export const documentSchema = z
@@ -112,7 +124,7 @@ export const documentSchema = z
     id,
     title: z.string().min(1).max(200),
     background: colorSchema,
-    objects: z.array(objectSchema).max(10000),
+    objects: z.array(objectSchema).max(MAX_DOCUMENT_OBJECTS),
     assets: z.record(z.string(), assetSchema),
   })
   .strict()
@@ -120,78 +132,15 @@ export const documentSchema = z
     const ids = new Set<string>();
     const nodes = new Map(doc.objects.map((o) => [o.id, o]));
     const groups = new Map<string, boolean>();
+    const mindIssues = new Map<AxonObject, string[]>();
+    for (const { object, message } of validateMindMap(doc, nodes)) {
+      const messages = mindIssues.get(object);
+      if (messages) messages.push(message);
+      else mindIssues.set(object, [message]);
+    }
     for (const o of doc.objects) {
-      if (o.type === "shape" && o.mind) {
-        if (doc.version < 3 && (o.mind.side || o.mind.presentation))
-          ctx.addIssue({
-            code: "custom",
-            message: "Текстовые темы требуют формат версии 3",
-          });
-        const directParent = o.mind.parentId
-          ? nodes.get(o.mind.parentId)
-          : undefined;
-        if (
-          o.mind.presentation === "text" &&
-          (!o.mind.side ||
-            (directParent?.type === "shape" &&
-              directParent.mind?.parentId &&
-              directParent.mind.side &&
-              directParent.mind.side !== o.mind.side))
-        )
-          ctx.addIssue({
-            code: "custom",
-            message: "Несогласованное направление ветви mind map",
-          });
-        const seen = new Set([o.id]);
-        let current = o;
-        while (current.mind?.parentId) {
-          const parent = nodes.get(current.mind.parentId);
-          if (
-            !parent ||
-            parent.type !== "shape" ||
-            !parent.mind ||
-            parent.mind.treeId !== o.mind.treeId ||
-            seen.has(parent.id)
-          ) {
-            ctx.addIssue({
-              code: "custom",
-              message: "Повреждённая структура mind map",
-            });
-            break;
-          }
-          seen.add(parent.id);
-          current = parent;
-        }
-        if (current.mind?.parentId === null && current.id !== o.mind.treeId)
-          ctx.addIssue({
-            code: "custom",
-            message: "Недопустимый корень mind map",
-          });
-        const branches = doc.objects.filter(
-          (c) => c.type === "connector" && c.mindBranch === o.id,
-        );
-        if (branches.length !== (o.mind.parentId ? 1 : 0))
-          ctx.addIssue({
-            code: "custom",
-            message: "Отсутствует или повторяется ветвь mind map",
-          });
-      }
-      if (o.type === "connector" && o.mindBranch) {
-        const child = nodes.get(o.mindBranch);
-        if (
-          !child ||
-          child.type !== "shape" ||
-          !child.mind?.parentId ||
-          o.start.type !== "bound" ||
-          o.end.type !== "bound" ||
-          o.start.nodeId !== child.mind.parentId ||
-          o.end.nodeId !== child.id
-        )
-          ctx.addIssue({
-            code: "custom",
-            message: "Недопустимая структурная связь",
-          });
-      }
+      for (const message of mindIssues.get(o) ?? [])
+        ctx.addIssue({ code: "custom", message });
       if (ids.has(o.id))
         ctx.addIssue({ code: "custom", message: "Повторяющийся ID" });
       ids.add(o.id);
@@ -203,7 +152,7 @@ export const documentSchema = z
           });
         groups.set(o.groupId, o.locked);
       }
-      if (o.type === "image" && !doc.assets[o.assetId])
+      if (o.type === "image" && !Object.hasOwn(doc.assets, o.assetId))
         ctx.addIssue({ code: "custom", message: "Изображение отсутствует" });
       if (o.type === "connector")
         for (const e of [o.start, o.end])
@@ -353,7 +302,7 @@ export function createObject(
   }
 }
 export function parseDocument(value: unknown): AxonDocument {
-  if (typeof value === "string" && value.length > 80e6)
+  if (typeof value === "string" && value.length > MAX_DOCUMENT_JSON_CHARS)
     throw new Error("Файл больше 80 МБ.");
   let json: unknown;
   try {
@@ -378,7 +327,48 @@ export function parseDocument(value: unknown): AxonDocument {
   return result.data;
 }
 export function serializeDocument(doc: AxonDocument) {
+  // Parsing already produces the canonical DTO; projecting it a second time
+  // would add a redundant full allocation on this validated public boundary.
   return JSON.stringify(parseDocument(doc));
+}
+function sameEndpointTarget(before: Endpoint, after: Endpoint) {
+  return before.type === "free"
+    ? after.type === "free"
+    : after.type === "bound" && before.nodeId === after.nodeId;
+}
+/**
+ * Validate edits to an already accepted immutable snapshot. Text, style and
+ * geometry edits need only their changed objects checked; a topology, asset or
+ * document metadata change retains the complete input-boundary validation.
+ */
+export function validateChangedObjects(
+  before: AxonDocument,
+  after: AxonDocument,
+): boolean {
+  if (before === after) return true;
+  if (
+    before.format !== after.format || before.version !== after.version ||
+    before.id !== after.id || before.title !== after.title ||
+    before.background !== after.background || before.assets !== after.assets ||
+    before.objects.length !== after.objects.length
+  )
+    return documentSchema.safeParse(after).success;
+  for (let i = 0; i < after.objects.length; i++) {
+    const previous = before.objects[i], next = after.objects[i];
+    if (previous === next) continue;
+    if (
+      previous.id !== next.id || previous.type !== next.type ||
+      previous.groupId !== next.groupId || previous.locked !== next.locked ||
+      (previous.type === "shape" && next.type === "shape" && previous.mind !== next.mind) ||
+      (previous.type === "image" && next.type === "image" && previous.assetId !== next.assetId) ||
+      (previous.type === "connector" && next.type === "connector" &&
+        (!sameEndpointTarget(previous.start, next.start) ||
+          !sameEndpointTarget(previous.end, next.end) || previous.mindBranch !== next.mindBranch))
+    )
+      return documentSchema.safeParse(after).success;
+    if (!objectSchema.safeParse(next).success) return false;
+  }
+  return true;
 }
 export function isTextTopic(
   o: AxonObject,

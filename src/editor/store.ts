@@ -3,8 +3,7 @@ import {
   createObject,
   CONNECTOR_STROKE_WIDTH,
   SHAPE_STROKE_WIDTH,
-  serializeDocument,
-  documentSchema,
+  validateChangedObjects,
   emptyDocument,
   type Asset,
   type AxonDocument,
@@ -46,6 +45,8 @@ import {
   type MindSide,
 } from "../model/mindmap";
 import { nextUntitledName } from "../shared/documentName";
+import { DocumentSession } from "./session";
+import { cacheDocumentIndex } from "../model/indices";
 export type Tool =
   | "select"
   | "shape"
@@ -70,11 +71,9 @@ export type EditorState = {
   interacting: boolean;
 };
 export class Editor {
-  tabs = new Map<
-    string,
-    { state: EditorState; history: History; session: TabSession }
-  >();
+  tabs = new Map<string, DocumentSession>();
   cancelGesture: (() => void) | null = null;
+  finishGesture: (() => void) | null = null;
   state: EditorState = {
     sessionId: "",
     doc: emptyDocument(),
@@ -100,11 +99,11 @@ export class Editor {
   };
   getSnapshot = () => this.state;
   set(patch: Partial<EditorState>) {
+    if (patch.doc) cacheDocumentIndex(this.state.doc, patch.doc);
     this.state = { ...this.state, ...patch };
     const tab = this.tabs.get(this.state.sessionId);
     if (tab) {
-      tab.state = this.state;
-      tab.history = this.history;
+      tab.update(this.state);
     }
     for (const l of this.listeners) l();
   }
@@ -117,9 +116,7 @@ export class Editor {
       {
         ...session,
         sessionId: session.sessionId ?? session.document.id,
-        savedContent:
-          session.savedContent ??
-          (session.dirty ? "" : serializeDocument(session.document)),
+        savedContent: session.savedContent ?? "",
       },
     ];
     for (const entry of entries) {
@@ -127,32 +124,33 @@ export class Editor {
       entry.untitledName ??=
         existing?.session.untitledName ??
         nextUntitledName(Array.from(this.tabs.values(), (t) => t.session));
-      if (existing) existing.session = entry;
+      if (existing) existing.accept(entry);
       else
-        this.tabs.set(entry.sessionId, {
-          session: entry,
-          history: new History(),
-          state: {
-            ...this.state,
-            sessionId: entry.sessionId,
-            doc: entry.document,
-            editing: null,
-            selection: entry.view?.selection ?? [],
-            camera: entry.view?.camera ?? { x: 220, y: 160, zoom: 1 },
-            tool: "select",
-            guides: [],
-            marquee: null,
-            interacting: false,
-            prefs: session.preferences,
-          },
-        });
+        this.tabs.set(
+          entry.sessionId,
+          new DocumentSession(
+            {
+              ...this.state,
+              sessionId: entry.sessionId,
+              doc: entry.document,
+              editing: null,
+              selection: entry.view?.selection ?? [],
+              camera: entry.view?.camera ?? { x: 220, y: 160, zoom: 1 },
+              tool: "select",
+              guides: [],
+              marquee: null,
+              interacting: false,
+              prefs: session.preferences,
+            },
+            entry,
+          ),
+        );
     }
     this.set({ prefs: session.preferences });
   }
   activate(id: string) {
     if (!this.tabs.has(id)) return;
-    this.cancelGesture?.();
-    this.endText();
+    this.finishOperation();
     this.textBefore = null;
     const tab = this.tabs.get(id)!;
     this.history = tab.history;
@@ -163,12 +161,14 @@ export class Editor {
     });
   }
   isDirty(id = this.state.sessionId) {
-    const tab = this.tabs.get(id);
-    return (
-      !!tab && serializeDocument(tab.state.doc) !== tab.session.savedContent
-    );
+    return this.tabs.get(id)?.content.dirty ?? false;
+  }
+  finishOperation() {
+    this.finishGesture?.();
+    this.endText();
   }
   snapshots(): SessionUpdate[] {
+    this.finishOperation();
     return [...this.tabs].map(([sessionId, tab]) => ({
       sessionId,
       document: tab.state.doc,
@@ -176,8 +176,7 @@ export class Editor {
     }));
   }
   closeSession(id: string, result: Session) {
-    this.cancelGesture?.();
-    this.endText();
+    this.finishOperation();
     this.tabs.delete(id);
     this.acceptSession(result);
     this.activate(result.sessionId ?? result.document.id);
@@ -186,9 +185,9 @@ export class Editor {
     this.set({ doc });
   }
   commit(before: AxonDocument, after = this.state.doc) {
-    if (JSON.stringify(before) !== JSON.stringify(after))
-      after = { ...after, version: 3 };
-    this.history.commit(before, after);
+    after = this.history.commit(before, after)
+      ? { ...after, version: 3 }
+      : before;
     this.set({ doc: after });
   }
   change(fn: (doc: AxonDocument) => AxonDocument) {
@@ -220,6 +219,7 @@ export class Editor {
   }
   duplicate() {
     const source = copySubset(this.state.doc, this.state.selection);
+    if (!source.objects.length) return;
     const result = pasteObjects(this.state.doc, source);
     this.change(() => result.doc);
     this.select(result.ids);
@@ -254,26 +254,29 @@ export class Editor {
   }
   style(patch: Partial<Style>) {
     const ids = this.state.selection;
-    if (ids.length)
+    const changes = (style: Style) => Object.entries(patch).some(
+      ([key, value]) => style[key as keyof Style] !== value,
+    );
+    if (ids.length) {
       this.formatChange((doc) => ({
         ...doc,
         objects: doc.objects.map((o) =>
-          ids.includes(o.id) && !o.locked
+          ids.includes(o.id) && !o.locked && changes(o.style)
             ? fitText({ ...o, style: { ...o.style, ...patch } })
             : o,
         ),
       }));
-    if (ids.length) return;
-    const selected = this.state.doc.objects.find((o) => ids.includes(o.id));
-    const key = selected?.type ?? this.state.tool;
+      return;
+    }
+    const key = this.state.tool;
     const base =
-      selected?.style ??
       this.newObject(
         key === "select" || key === "hand"
           ? "shape"
           : (key as AxonObject["type"]),
         { x: 0, y: 0 },
       ).style;
+    if (!changes(base)) return;
     this.preferences({
       ...this.state.prefs,
       styles: { ...this.state.prefs.styles, [key]: { ...base, ...patch } },
@@ -292,7 +295,7 @@ export class Editor {
     else this.change(() => next);
   }
   private validTextGeometry(doc: AxonDocument) {
-    if (documentSchema.safeParse(doc).success) return true;
+    if (validateChangedObjects(this.state.doc, doc)) return true;
     if (typeof window !== "undefined")
       window.dispatchEvent(
         new CustomEvent("axon-error", {
@@ -454,6 +457,8 @@ export class Editor {
     this.set({ editing: id, selection: [id], tool: "select" });
   }
   updateText(text: string) {
+    const editing = this.state.doc.objects.find((o) => o.id === this.state.editing);
+    if (!editing || !("text" in editing) || editing.text === text) return;
     const doc = {
       ...this.state.doc,
       objects: this.state.doc.objects.map((o) =>
@@ -504,10 +509,9 @@ export class Editor {
     this.set({ tool: "select" });
   }
   async copy() {
-    if (this.state.selection.length)
-      await window.axon.writeClipboard(
-        copySubset(this.state.doc, this.state.selection),
-      );
+    if (!this.state.selection.length) return;
+    const source = copySubset(this.state.doc, this.state.selection);
+    if (source.objects.length) await window.axon.writeClipboard(source);
   }
   async paste() {
     const sessionId = this.state.sessionId;

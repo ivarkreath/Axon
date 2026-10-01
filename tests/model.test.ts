@@ -39,7 +39,7 @@ import { History } from "../src/model/history";
 import { snap } from "../src/model/snapping";
 import { resizeObject } from "../src/editor/resize";
 import { exportBytes, exportScene, makeSVG } from "../src/io/export";
-import { PDFDocument } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFName, PDFRef } from "pdf-lib";
 import { fixture } from "./fixture";
 beforeAll(() => {
   const font = (name: string) =>
@@ -303,5 +303,25 @@ describe("export invariants", () => {
     expect(pdf.getPage(0).getWidth()).toBe(
       exportScene(d, [], options).bounds.w,
     );
+  });
+  it("shares embedded image data between repeated PDF drawings and isolates exports", async () => {
+    const doc = emptyDocument();
+    const image = createObject("image", { x: 0, y: 0 }, doc.background);
+    if (image.type !== "image") throw new Error("image");
+    image.assetId = "asset";
+    doc.assets.asset = {
+      id: "asset", mime: "image/png", width: 1, height: 1,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQ3sAAAAASUVORK5CYII=",
+    };
+    doc.objects = [image, { ...image, id: "copy", x: 300 }];
+    for (let i = 0; i < 2; i++) {
+      const bytes = await exportBytes(doc, [], { ...options, format: "pdf" });
+      const pdf = await PDFDocument.load(bytes);
+      const xObjects = pdf.getPage(0).node.Resources()!.lookup(PDFName.of("XObject"), PDFDict);
+      const references = xObjects.values();
+      expect(references).toHaveLength(2);
+      expect(references.every((value) => value instanceof PDFRef)).toBe(true);
+      expect(new Set(references.map((value) => value.toString())).size).toBe(1);
+    }
   });
 });

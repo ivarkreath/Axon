@@ -6,42 +6,44 @@ import {
   pruneAssets,
 } from "./document";
 import { endpoint, objectBounds, union } from "./geometry";
+import { cacheDocumentIndex, getDocumentIndex } from "./indices";
 export function expandSelection(
   doc: AxonDocument,
   ids: string[],
   descendants = true,
 ): string[] {
   const selected = new Set(ids);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const groups = new Set(
-      doc.objects
-        .filter((o) => selected.has(o.id))
-        .map((o) => o.groupId)
-        .filter(Boolean),
-    );
-    for (const o of doc.objects) {
-      if (selected.has(o.id)) continue;
+  if (!selected.size) return [];
+  const { byId, order, groups, children, branches } = getDocumentIndex(doc);
+  const expandedGroups = new Set<string>();
+  const queue = [...selected];
+  const add = (id: string) => {
+    if (selected.has(id)) return;
+    selected.add(id);
+    queue.push(id);
+  };
+  for (let i = 0; i < queue.length; i++) {
+    const id = queue[i];
+    const groupId = byId.get(id)?.groupId;
+    if (groupId && !expandedGroups.has(groupId)) {
+      for (const member of groups.get(groupId) ?? []) add(member);
+      expandedGroups.add(groupId);
+    }
+    if (!descendants) continue;
+    for (const child of children.get(id) ?? []) add(child);
+    for (const branchId of branches.get(id) ?? []) {
+      const branch = byId.get(branchId);
       if (
-        (o.groupId && groups.has(o.groupId)) ||
-        (descendants &&
-          o.type === "shape" &&
-          o.mind?.parentId &&
-          selected.has(o.mind.parentId)) ||
-        (descendants &&
-          o.type === "connector" &&
-          o.mindBranch &&
-          selected.has(o.mindBranch) &&
-          o.start.type === "bound" &&
-          selected.has(o.start.nodeId))
-      ) {
-        selected.add(o.id);
-        changed = true;
-      }
+        branch?.type === "connector" &&
+        selected.has(branch.mindBranch!) &&
+        branch.start.type === "bound" &&
+        selected.has(branch.start.nodeId)
+      )
+        add(branch.id);
     }
   }
-  return doc.objects.filter((o) => selected.has(o.id)).map((o) => o.id);
+  return [...selected].filter((id) => byId.has(id))
+    .sort((a, b) => order.get(a)! - order.get(b)!);
 }
 export function deleteObjects(doc: AxonDocument, ids: string[]): AxonDocument {
   const expanded = expandSelection(doc, ids);
@@ -81,14 +83,20 @@ export function deleteObjects(doc: AxonDocument, ids: string[]): AxonDocument {
     ),
   });
 }
+export function prepareMove(doc: AxonDocument, ids: string[]) {
+  const selected = new Set(expandSelection(doc, ids));
+  const { byId } = getDocumentIndex(doc);
+  return { selected, locked: [...selected].some((id) => byId.get(id)?.locked) };
+}
 export function moveObjects(
   doc: AxonDocument,
   ids: string[],
   delta: Point,
+  prepared = prepareMove(doc, ids),
 ): AxonDocument {
-  const selected = new Set(expandSelection(doc, ids));
-  if (doc.objects.some((o) => selected.has(o.id) && o.locked)) return doc;
-  return {
+  const { selected, locked } = prepared;
+  if (locked || !selected.size || (!delta.x && !delta.y)) return doc;
+  const result: AxonDocument = {
     ...doc,
     objects: doc.objects.map((o) => {
       if (!selected.has(o.id) || o.locked) return o;
@@ -100,6 +108,8 @@ export function moveObjects(
       return { ...o, x: o.x + delta.x, y: o.y + delta.y };
     }),
   };
+  cacheDocumentIndex(doc, result);
+  return result;
 }
 export function copySubset(doc: AxonDocument, ids: string[]): AxonDocument {
   const selected = new Set(expandSelection(doc, ids));
@@ -146,13 +156,32 @@ export function copySubset(doc: AxonDocument, ids: string[]): AxonDocument {
     );
   // Copied subtrees become independent trees, including when the source was an internal branch.
   const map = new Map(objects.map((o) => [o.id, o]));
+  if (map.size !== objects.length) return pruneAssets({ ...doc, objects: [] });
+  const roots = new Map<string, string>();
   for (const o of objects)
     if (o.type === "shape" && o.mind) {
-      let root = o;
-      while (root.mind?.parentId)
-        root = map.get(root.mind.parentId) as typeof o;
-      o.mind = { ...o.mind, treeId: root.id };
+      const path = new Set<string>();
+      let current: AxonObject | undefined = o;
+      let rootId: string | undefined;
+      while (current?.type === "shape" && current.mind) {
+        rootId = roots.get(current.id);
+        if (rootId) break;
+        // Input boundaries reject corrupt documents. Reject an invalid internal
+        // snapshot too, without hanging or guessing a new tree structure.
+        if (path.has(current.id)) return pruneAssets({ ...doc, objects: [] });
+        path.add(current.id);
+        if (!current.mind.parentId) {
+          rootId = current.id;
+          break;
+        }
+        current = map.get(current.mind.parentId);
+      }
+      if (!rootId) return pruneAssets({ ...doc, objects: [] });
+      for (const id of path) roots.set(id, rootId);
     }
+  for (const o of objects)
+    if (o.type === "shape" && o.mind)
+      o.mind = { ...o.mind, treeId: roots.get(o.id)! };
   return pruneAssets({ ...doc, objects });
 }
 export function pasteObjects(

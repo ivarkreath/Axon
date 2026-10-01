@@ -11,7 +11,8 @@ export function Selection({
   zoom: number;
   showEndpoints?: boolean;
 }) {
-  const objects = doc.objects.filter((o) => ids.includes(o.id));
+  const selectedIds = new Set(ids);
+  const objects = doc.objects.filter((o) => selectedIds.has(o.id));
   const box = union(objects.map((o) => objectBounds(o, doc)));
   if (!box) return null;
   const o = objects.length === 1 ? objects[0] : null;

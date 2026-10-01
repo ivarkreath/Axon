@@ -4,16 +4,17 @@ import { primitives, labelArea } from "./primitives";
 import { layoutText } from "./text";
 import { isTextTopic } from "../model/document";
 import { connectorPath } from "../model/geometry";
-export const ObjectView = memo(
+import { objectRenderDocument } from "./dependencies";
+type Props = { object: AxonObject; doc: AxonDocument; zoom: number };
+export function ObjectView({ object, doc, zoom }: Props) {
+  return <ObjectBody object={object} doc={objectRenderDocument(object, doc)} zoom={zoom} />;
+}
+const ObjectBody = memo(
   function ObjectView({
     object: o,
     doc,
     zoom,
-  }: {
-    object: AxonObject;
-    doc: AxonDocument;
-    zoom: number;
-  }) {
+  }: Props) {
     const connectionDoc = o.type === "connector" ? doc : undefined;
     const ps = useMemo(
       () => primitives(o, doc, false, zoom),
@@ -96,7 +97,5 @@ export const ObjectView = memo(
   (a, b) =>
     a.object === b.object &&
     (a.zoom === b.zoom || !["connector", "stroke"].includes(a.object.type)) &&
-    (a.object.type === "connector"
-      ? a.doc === b.doc
-      : a.doc.background === b.doc.background && a.doc.assets === b.doc.assets),
+    a.doc === b.doc,
 );

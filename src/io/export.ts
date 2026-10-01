@@ -1,4 +1,4 @@
-import { PDFDocument, rgb } from "pdf-lib";
+import type { PDFImage } from "pdf-lib";
 import type { AxonDocument, Bounds } from "../model/document";
 import { expandSelection } from "../model/operations";
 import {
@@ -88,12 +88,6 @@ export async function rasterize(
     URL.revokeObjectURL(url);
   }
 }
-const pdfColor = (hex: string) =>
-  rgb(
-    parseInt(hex.slice(1, 3), 16) / 255,
-    parseInt(hex.slice(3, 5), 16) / 255,
-    parseInt(hex.slice(5, 7), 16) / 255,
-  );
 export async function exportBytes(
   doc: AxonDocument,
   ids: string[],
@@ -104,6 +98,13 @@ export async function exportBytes(
   if (options.format === "png")
     return rasterize(makeSVG(doc, ids, options), options.scale);
   const { bounds: b, items } = exportScene(doc, ids, options);
+  const { PDFDocument, rgb } = await import("pdf-lib");
+  const pdfColor = (hex: string) =>
+    rgb(
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255,
+    );
   const pdf = await PDFDocument.create();
   pdf.setTitle(doc.title);
   pdf.setCreator("Axon");
@@ -115,11 +116,16 @@ export async function exportBytes(
     height: b.h,
     color: pdfColor(doc.background),
   });
+  const images = new Map<string, PDFImage>();
   for (const p of items) {
     if (p.type === "image") {
-      const image = p.href.startsWith("data:image/png")
-        ? await pdf.embedPng(p.href)
-        : await pdf.embedJpg(p.href);
+      let image = images.get(p.href);
+      if (!image) {
+        image = p.href.startsWith("data:image/png")
+          ? await pdf.embedPng(p.href)
+          : await pdf.embedJpg(p.href);
+        images.set(p.href, image);
+      }
       page.drawImage(image, {
         x: p.x - b.x,
         y: b.h - (p.y - b.y) - p.h,

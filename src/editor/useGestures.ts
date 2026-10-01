@@ -1,5 +1,5 @@
 import { useRef, type PointerEvent as ReactPointerEvent } from "react";
-import { type AxonDocument, type Point } from "../model/document";
+import { type AxonDocument, type Bounds, type Point } from "../model/document";
 import {
   endpoint,
   intersects,
@@ -10,11 +10,12 @@ import {
   union,
   type Camera,
 } from "../model/geometry";
-import { expandSelection, moveObjects } from "../model/operations";
-import { snap } from "../model/snapping";
+import { expandSelection, moveObjects, prepareMove } from "../model/operations";
+import { prepareSnap, snap, type SnapTargets } from "../model/snapping";
 import { editor } from "./store";
 import { resizeObject } from "./resize";
-import { scaleSelection } from "../model/transform";
+import { prepareScaleSelection, scaleSelection } from "../model/transform";
+import { getDocumentIndex } from "../model/indices";
 import { quickCreate, type Side } from "../model/quickCreate";
 type Gesture = {
   kind:
@@ -38,6 +39,10 @@ type Gesture = {
   handle?: string;
   end?: "start" | "end";
   shift?: boolean;
+  movement?: ReturnType<typeof prepareMove>;
+  scaling?: ReturnType<typeof prepareScaleSelection>;
+  bounds?: Bounds | null;
+  snapping?: SnapTargets;
 };
 export function useGestures(space: React.RefObject<boolean>) {
   const gesture = useRef<Gesture | null>(null);
@@ -93,11 +98,11 @@ export function useGestures(space: React.RefObject<boolean>) {
       return;
     }
     if (handle && target.hasAttribute("data-scale")) {
-      gesture.current = { ...base, kind: "scale", handle };
+      gesture.current = { ...base, kind: "scale", handle, scaling: prepareScaleSelection(state.doc, base.ids) };
       return;
     }
     if (handle && id) {
-      gesture.current = { ...base, kind: "resize", id, handle };
+      gesture.current = { ...base, kind: "resize", id, handle, snapping: prepareSnap(state.doc, [id]) };
       return;
     }
     if (end && id) {
@@ -115,7 +120,14 @@ export function useGestures(space: React.RefObject<boolean>) {
             ? state.selection
             : group;
         editor.select(ids);
-        gesture.current = { ...base, kind: "move", ids };
+        const movement = prepareMove(state.doc, ids);
+        const { byId } = getDocumentIndex(state.doc);
+        gesture.current = {
+          ...base, kind: "move", ids, movement,
+          bounds: union(ids.map((id) => byId.get(id)).filter((o) => !!o && !o.locked)
+            .map((o) => objectBounds(o!, state.doc))),
+          snapping: prepareSnap(state.doc, [...movement.selected]),
+        };
       } else {
         if (!e.shiftKey) editor.select([]);
         gesture.current = { ...base, kind: "marquee", shift: e.shiftKey };
@@ -143,6 +155,10 @@ export function useGestures(space: React.RefObject<boolean>) {
     const delta = { x: p.x - g.start.x, y: p.y - g.start.y };
     if (Math.hypot(screen.x - g.screen.x, screen.y - g.screen.y) >= 5)
       g.dragged = true;
+    if (!delta.x && !delta.y && ["move", "resize", "scale"].includes(g.kind)) {
+      editor.set({ doc: g.before, guides: [] });
+      return;
+    }
     if (g.kind === "connect") {
       if (!g.dragged) return;
       const source = g.before.objects.find((o) => o.id === g.id)!;
@@ -167,7 +183,7 @@ export function useGestures(space: React.RefObject<boolean>) {
       return;
     }
     if (g.kind === "scale") {
-      editor.preview(scaleSelection(g.before, g.ids, g.handle!, delta));
+      editor.preview(scaleSelection(g.before, g.ids, g.handle!, delta, g.scaling));
       return;
     }
     if (g.kind === "pan") {
@@ -186,11 +202,7 @@ export function useGestures(space: React.RefObject<boolean>) {
     }
     if (g.kind === "move") {
       if (!g.dragged) return;
-      const box = union(
-        g.before.objects
-          .filter((o) => g.ids.includes(o.id) && !o.locked)
-          .map((o) => objectBounds(o, g.before)),
-      );
+      const box = g.bounds;
       if (!box) return;
       const snapping = e.altKey
         ? { delta: { x: 0, y: 0 }, guides: [] }
@@ -201,18 +213,19 @@ export function useGestures(space: React.RefObject<boolean>) {
             g.camera.zoom,
             state.prefs.snapObjects,
             state.prefs.snapGrid,
+            g.snapping,
           );
       editor.set({
         doc: moveObjects(g.before, g.ids, {
           x: delta.x + snapping.delta.x,
           y: delta.y + snapping.delta.y,
-        }),
+        }, g.movement),
         guides: snapping.guides,
       });
       return;
     }
     if (g.kind === "resize") {
-      const original = g.before.objects.find((o) => o.id === g.id)!;
+      const original = getDocumentIndex(g.before).byId.get(g.id!)!;
       let resized = resizeObject(original, g.handle!, delta, e.shiftKey);
       if (!e.altKey && original.type !== "image") {
         const moving = {
@@ -228,6 +241,7 @@ export function useGestures(space: React.RefObject<boolean>) {
           g.camera.zoom,
           state.prefs.snapObjects,
           state.prefs.snapGrid,
+          g.snapping,
         );
         resized = resizeObject(
           original,

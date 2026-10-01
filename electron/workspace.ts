@@ -1,31 +1,46 @@
 ﻿import { readFile, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 import {
   emptyDocument,
   parseDocument,
-  serializeDocument,
+  serializePreparedDocument,
   uid,
   type AxonDocument,
 } from "../src/model/document";
 import type { TabSession, ViewState } from "../src/shared/contracts";
-import { writeDocument } from "./storage";
+import { writePreparedDocument } from "./storage";
+import { DocumentContentState } from "../src/model/content";
+import { MAX_DOCUMENT_BYTES, MAX_TABS } from "../src/shared/limits";
 import { nextUntitledName } from "../src/shared/documentName";
 export type FileTab = TabSession & { fingerprint: string | null };
 export async function fingerprint(file: string) {
   try {
-    return createHash("sha256")
-      .update(await readFile(file))
-      .digest("hex");
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(file)) hash.update(chunk);
+    return hash.digest("hex");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
   }
 }
+async function resolvedFilePath(file: string): Promise<string> {
+  const absolute = path.resolve(file);
+  try {
+    return await realpath(absolute);
+  } catch {
+    // A deleted file still belongs to its canonical parent (e.g. /var -> /private/var).
+    const parent = path.dirname(absolute);
+    return parent === absolute
+      ? absolute
+      : path.join(await resolvedFilePath(parent), path.basename(absolute));
+  }
+}
 export async function sameFile(a: string, b: string) {
   const [ra, rb] = await Promise.all([
-    realpath(a).catch(() => path.resolve(a)),
-    realpath(b).catch(() => path.resolve(b)),
+    resolvedFilePath(a),
+    resolvedFilePath(b),
   ]);
   if (
     process.platform === "win32"
@@ -44,6 +59,10 @@ export class FileWorkspace {
   activeId = "";
   folder: string | null = null;
   folderFiles: string[] = [];
+  private contents = new WeakMap<FileTab, DocumentContentState>();
+  // Queue at invocation time, before realpath/conflict checks can reorder requests.
+  // One workspace queue also covers aliases and Save As to the same target.
+  private writes: Promise<unknown> = Promise.resolve();
   get active() {
     return this.get(this.activeId);
   }
@@ -55,9 +74,9 @@ export class FileWorkspace {
   add(
     document = emptyDocument(),
     file: string | null = null,
-    savedContent = serializeDocument(document),
+    savedContent?: string,
   ): FileTab {
-    if (this.tabs.size >= 100)
+    if (this.tabs.size >= MAX_TABS)
       throw new Error(
         "Открыто 100 вкладок. Закройте ненужные перед открытием новой.",
       );
@@ -66,11 +85,15 @@ export class FileWorkspace {
       untitledName: nextUntitledName(this.tabs.values()),
       document,
       path: file,
-      savedContent,
-      dirty: serializeDocument(document) !== savedContent,
+      savedContent: savedContent ?? serializePreparedDocument(document),
+      dirty: false,
       recovered: false,
       fingerprint: null,
     };
+    const content = new DocumentContentState(document,
+      savedContent === undefined ? document : parseDocument(savedContent));
+    this.contents.set(tab, content);
+    tab.dirty = content.dirty;
     this.tabs.set(tab.sessionId, tab);
     this.activeId = tab.sessionId;
     return tab;
@@ -78,9 +101,14 @@ export class FileWorkspace {
   update(id: string, document: AxonDocument, view?: ViewState) {
     const tab = this.get(id);
     tab.document = document;
-    tab.dirty = serializeDocument(document) !== tab.savedContent;
+    const content = this.contents.get(tab)!;
+    content.update(document);
+    tab.dirty = content.dirty;
     if (view) tab.view = view;
     return tab;
+  }
+  updateView(id: string, view: ViewState) {
+    this.get(id).view = view;
   }
   async open(file: string) {
     for (const tab of this.tabs.values())
@@ -89,7 +117,7 @@ export class FileWorkspace {
         return tab;
       }
     const resolved = await realpath(file);
-    if ((await stat(resolved)).size > 80e6)
+    if ((await stat(resolved)).size > MAX_DOCUMENT_BYTES)
       throw new Error("Файл больше 80 МБ.");
     const bytes = await readFile(resolved);
     const doc = parseDocument(bytes.toString("utf8"));
@@ -101,21 +129,39 @@ export class FileWorkspace {
     if (!tab.path || !(await sameFile(tab.path, file))) return false;
     return (await fingerprint(file)) !== tab.fingerprint;
   }
-  async save(tab: FileTab, file: string, snapshot: AxonDocument) {
+  save(tab: FileTab, file: string, snapshot: AxonDocument): Promise<string> {
+    const writing = this.writes.catch(() => {}).then(() => this.write(tab, file, snapshot));
+    this.writes = writing;
+    return writing;
+  }
+  private async write(tab: FileTab, file: string, snapshot: AxonDocument) {
+    if (this.tabs.get(tab.sessionId) !== tab) throw new Error("Вкладка уже закрыта");
     for (const other of this.tabs.values())
       if (other !== tab && other.path && (await sameFile(other.path, file)))
         throw new Error(
           "Этот файл уже открыт в другой вкладке. Выберите другое имя.",
         );
-    await writeDocument(file, snapshot);
-    tab.path = await realpath(file);
-    tab.savedContent = serializeDocument(snapshot);
+    // Resolve the parent before writing. If realpath fails after a successful
+    // atomic write, keep its known canonical target and report the written state.
+    const target = path.join(
+      await resolvedFilePath(path.dirname(path.resolve(file))),
+      path.basename(file),
+    );
+    if (this.tabs.get(tab.sessionId) !== tab) throw new Error("Вкладка уже закрыта");
+    const savedContent = await writePreparedDocument(file, snapshot);
+    const savedPath = await realpath(file).catch(() => target);
+    if (this.tabs.get(tab.sessionId) !== tab) return savedPath;
+    tab.path = savedPath;
+    tab.savedContent = savedContent;
     tab.fingerprint = createHash("sha256")
       .update(tab.savedContent)
       .digest("hex");
-    tab.dirty = serializeDocument(tab.document) !== tab.savedContent;
+    const content = this.contents.get(tab)!;
+    content.markSaved(snapshot);
+    tab.dirty = content.dirty;
     tab.recovered = false;
     tab.unavailable = false;
+    return savedPath;
   }
   remove(id: string) {
     this.tabs.delete(id);
@@ -140,10 +186,13 @@ export class FileWorkspace {
     const restored: FileTab[] = [];
     for (const entry of raw.tabs) {
       const document = parseDocument(entry.document),
-        savedContent = serializeDocument(parseDocument(entry.savedContent));
+        saved = parseDocument(entry.savedContent),
+        savedContent = serializePreparedDocument(saved);
       const file = typeof entry.path === "string" ? entry.path : null;
       const unavailable = !!file && !(await stat(file).catch(() => null));
-      restored.push({
+      const content = new DocumentContentState(document, saved);
+      const dirty = content.dirty;
+      const tab = {
         ...entry,
         untitledName:
           typeof entry.untitledName === "string" &&
@@ -154,10 +203,12 @@ export class FileWorkspace {
         document,
         savedContent,
         path: file,
-        dirty: serializeDocument(document) !== savedContent,
-        recovered: serializeDocument(document) !== savedContent,
+        dirty,
+        recovered: dirty,
         unavailable,
-      });
+      };
+      restored.push(tab);
+      this.contents.set(tab, content);
     }
     this.tabs = new Map(restored.map((t) => [t.sessionId, t]));
     this.activeId =

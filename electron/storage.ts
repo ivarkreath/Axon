@@ -2,9 +2,10 @@ import { mkdir, open, rename, rm, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   parseDocument,
-  serializeDocument,
+  serializePreparedDocument,
   type AxonDocument,
 } from "../src/model/document";
+import { MAX_DOCUMENT_BYTES } from "../src/shared/limits";
 export async function atomicWrite(file: string, data: string | Uint8Array) {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${crypto.randomUUID()}.tmp`;
@@ -23,14 +24,19 @@ export async function atomicWrite(file: string, data: string | Uint8Array) {
   }
 }
 export async function readDocument(file: string): Promise<AxonDocument> {
-  if ((await stat(file)).size > 80e6) throw new Error("Файл больше 80 МБ.");
+  if ((await stat(file)).size > MAX_DOCUMENT_BYTES) throw new Error("Файл больше 80 МБ.");
   return parseDocument(await readFile(file, "utf8"));
 }
 export async function writeDocument(file: string, doc: AxonDocument) {
-  const data = serializeDocument(doc);
-  if (Buffer.byteLength(data, "utf8") > 80e6)
+  return writePreparedDocument(file, parseDocument(doc));
+}
+/** Internal persistence of snapshots already accepted by the document boundary. */
+export async function writePreparedDocument(file: string, doc: AxonDocument) {
+  const data = serializePreparedDocument(doc);
+  if (Buffer.byteLength(data, "utf8") > MAX_DOCUMENT_BYTES)
     throw new Error(
       "Документ больше 80 МБ. Уменьшите количество изображений или содержимого перед сохранением.",
     );
   await atomicWrite(file, data);
+  return data;
 }
