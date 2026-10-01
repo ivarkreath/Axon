@@ -14,7 +14,7 @@ import {
   route,
   union,
 } from "../model/geometry";
-import { fontFor, layoutText, safeArea, textWidth } from "./text";
+import { layoutText, safeArea, textBounds, textLinePath, textWidth } from "./text";
 export type PathPrimitive = {
   type: "path";
   d: string;
@@ -159,12 +159,7 @@ export function primitives(
       s,
       o.type === "sticky" || o.type === "text",
     );
-    for (const l of lines) {
-      const glyphs = fontFor(s).getPath(l.text, l.x, l.y, s.fontSize, {
-        kerning: true,
-      });
-      out.push(path(glyphs.toPathData(3), s.color));
-    }
+    for (const l of lines) out.push(path(textLinePath(l, s), s.color));
   }
   return out;
 }
@@ -175,6 +170,7 @@ export function contentBounds(
   const boxes: Bounds[] = [];
   // SVG paths share the same geometry with the screen. Text extents are measured from font outlines.
   for (const o of objects) {
+    let area: Bounds | undefined;
     if (o.type === "connector") {
       const b = objectBounds(o, doc);
       const margin = Math.max(14, o.style.strokeWidth * 5);
@@ -185,7 +181,7 @@ export function contentBounds(
         h: b.h + margin * 2,
       });
       if (o.text) {
-        const a = labelArea(o, doc);
+        const a = area = labelArea(o, doc);
         boxes.push({ x: a.x - 5, y: a.y - 5, w: a.w + 10, h: a.h + 10 });
       }
     } else if (o.type === "stroke") {
@@ -203,20 +199,10 @@ export function contentBounds(
       const m = o.style.strokeWidth / 2;
       boxes.push({ x: o.x - m, y: o.y - m, w: o.w + m * 2, h: o.h + m * 2 });
     }
-    if ("text" in o && o.text)
-      for (const l of layoutText(
-        o.text,
-        labelArea(o, doc),
-        o.style,
-        o.type === "sticky" || o.type === "text",
-      )) {
-        if (!l.text.trim()) continue;
-        const b = fontFor(o.style)
-          .getPath(l.text, l.x, l.y, o.style.fontSize)
-          .getBoundingBox();
-        if (Number.isFinite(b.x1))
-          boxes.push({ x: b.x1, y: b.y1, w: b.x2 - b.x1, h: b.y2 - b.y1 });
-      }
+    if ("text" in o && o.text) {
+      const bounds = textBounds(o, area ?? labelArea(o, doc), o.type === "sticky" || o.type === "text");
+      if (bounds) boxes.push(bounds);
+    }
   }
   return union(boxes);
 }

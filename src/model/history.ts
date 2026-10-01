@@ -1,4 +1,6 @@
 import type { AxonDocument } from "./document";
+import { documentContentEqual } from "./content";
+import { MAX_HISTORY_ENTRIES } from "../shared/limits";
 export class History {
   private past: AxonDocument[] = [];
   private future: AxonDocument[] = [];
@@ -9,11 +11,11 @@ export class History {
     return this.future.length > 0;
   }
   commit(before: AxonDocument, after: AxonDocument) {
-    if (before === after || JSON.stringify(before) === JSON.stringify(after))
-      return;
+    if (documentContentEqual(before, after)) return false;
     this.past.push(before);
-    if (this.past.length > 100) this.past.shift();
+    if (this.past.length > MAX_HISTORY_ENTRIES) this.past.shift();
     this.future = [];
+    return true;
   }
   undo(current: AxonDocument) {
     const p = this.past.pop();

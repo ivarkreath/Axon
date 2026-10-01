@@ -77,6 +77,7 @@ export interface AxonAPI {
     sessionId?: string,
     view?: ViewState,
   ): Promise<{ dirty: boolean }>;
+  updateView(sessionId: string, view: ViewState): Promise<void>;
   file(
     command: FileCommand,
     document: AxonDocument,

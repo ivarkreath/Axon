@@ -8,6 +8,7 @@ const invoke = (channel: string, ...args: unknown[]) =>
 const api: AxonAPI = {
   init: () => invoke("axon:init"),
   updateDocument: (doc, id, view) => invoke("axon:update", doc, id, view),
+  updateView: (id, view) => invoke("axon:view", id, view),
   file: (command, doc, index, id) =>
     invoke("axon:file", command, doc, index, id),
   activateSession: (id) => invoke("axon:activate", id),

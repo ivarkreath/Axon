@@ -8,6 +8,7 @@ import type {
 } from "./document";
 import { connectorMarkers } from "./document";
 import { markerGeometry } from "./markers";
+import { getDocumentIndex } from "./indices";
 export type Camera = { x: number; y: number; zoom: number };
 export const screenToWorld = (p: Point, c: Camera): Point => ({
   x: (p.x - c.x) / c.zoom,
@@ -66,12 +67,24 @@ export function anchor(node: AxonObject, side: (typeof sides)[number]): Point {
 }
 export function endpoint(e: Endpoint, doc: AxonDocument): Point {
   if (e.type === "free") return { x: e.x, y: e.y };
-  const node = doc.objects.find((o) => o.id === e.nodeId);
+  const node = getDocumentIndex(doc).byId.get(e.nodeId);
   return node ? anchor(node, e.side) : { x: 0, y: 0 };
 }
-export function route(c: Connector, doc: AxonDocument): Point[] {
+const routes = new WeakMap<Connector, { ax: number; ay: number; bx: number; by: number; kind: Connector["route"]; startSide: string; endSide: string; points: Point[] }>();
+export function route(c: Connector, doc: AxonDocument): readonly Point[] {
   const a = endpoint(c.start, doc),
     b = endpoint(c.end, doc);
+  const cached = routes.get(c);
+  const startSide = c.start.type === "bound" ? c.start.side : "free";
+  const endSide = c.end.type === "bound" ? c.end.side : "free";
+  if (cached && cached.ax === a.x && cached.ay === a.y && cached.bx === b.x && cached.by === b.y &&
+    cached.kind === c.route && cached.startSide === startSide && cached.endSide === endSide)
+    return cached.points;
+  const points = buildRoute(c, doc, a, b);
+  routes.set(c, { ax: a.x, ay: a.y, bx: b.x, by: b.y, kind: c.route, startSide, endSide, points });
+  return points;
+}
+function buildRoute(c: Connector, doc: AxonDocument, a: Point, b: Point): Point[] {
   if (c.route === "straight") return [a, b];
   if (c.route === "curved") {
     const [p, q] = curveControls(c, doc);
@@ -204,7 +217,7 @@ export function connectorPath(
   )[1];
   return `M${cut[0].x},${cut[0].y}C${cut[1].x},${cut[1].y} ${cut[2].x},${cut[2].y} ${cut[3].x},${cut[3].y}`;
 }
-export function midpoint(points: Point[]): Point {
+export function midpoint(points: readonly Point[]): Point {
   const lens = points
     .slice(1)
     .map((p, i) => Math.hypot(p.x - points[i].x, p.y - points[i].y));

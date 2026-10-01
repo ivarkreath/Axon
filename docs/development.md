@@ -33,6 +33,10 @@ npm run test:exports
 node tests/performance.mjs
 ```
 
+Регрессии review: `node tests/review-desktop.mjs` после desktop fixtures. Воспроизводимые нагрузочные сцены и Node-замеры: `node --expose-gc tests/review-performance.mjs --output artifacts/review-performance`; затем `node tests/review-performance-desktop.mjs --fixtures artifacts/review-performance`. Для трёх встроенных PNG добавьте к Node-команде `--scenarios 1000-image --image-count 3`, для двух вкладок по 9000 объектов к desktop-команде — `--two-tabs-only`. Сохранённый baseline bundle можно передать Node-команде через `--bundle <path> --label baseline`. UI-замеры используют production dist, отдельный профиль и видимое окно; не запускайте параллельно другие desktop-тесты. Полные результаты текущего исправления — [review-remediation.md](review-remediation.md).
+
+Память после повторного открытия, жестов, переключения и закрытия двух вкладок по 9000 объектов: `node tests/review-performance-desktop.mjs --fixtures artifacts/review-performance --memory-only --output artifacts/review-memory --label after`. Проверка выполняет два цикла с диагностическим GC renderer перед снимками heap, без порога размера heap; память main process не измеряется. По умолчанию запускается текущая сборка. Для отдельного контролируемого сравнения renderer можно передать `--app-root <technical-staging>`: подтвердите происхождение renderer и идентичность main/preload, укажите вариант в `--label`. Прежний renderer с текущим main не является исходной версией приложения целиком. Технический staging использует существующий Electron runtime, без отдельного пользовательского EXE.
+
 Первый desktop-прогон создаёт `artifacts/acceptance.axon`, `roundtrip.axon`, `stress.axon`, PNG/SVG/PDF и снимки окна. Последующие проверки используют эти fixtures. Они не загружаются в стартовый документ продукта и не становятся шаблонами UI.
 
 Тесты запускают настоящее окно Electron, но детерминированно подменяют **ответы нативных диалогов**. Реальные IPC, validation, filesystem и clipboard выполняются. Test-only launcher восстановления живёт в `tests/`, в дистрибутив не входит. Изолированный userData задаётся `AXON_TEST_DATA`, обычные пользовательские данные не затрагиваются. Тесты меняют системный clipboard тестовым содержимым.
@@ -84,7 +88,7 @@ Workflow `.github/workflows/macos-release.yml` автоматически зап
 - Windows: `%APPDATA%/Axon/`.
 - macOS: `~/Library/Application Support/Axon/`.
 
-`settings.json` — тема, сетка, привязки, reduced motion, восстановление, последние стили, до восьми последних файлов. `recovery.json` — последняя успешно записанная рабочая копия, путь, сохранённое содержимое и время. `.axon` хранится в выбранном пользователем месте. История undo только в памяти. Все шрифты и UI-ресурсы находятся внутри дистрибутива.
+`settings.json` — тема, сетка, привязки, reduced motion, восстановление, последние стили, до восьми последних файлов. `recovery.json` — рабочие копии вкладок, их пути и сохранённое содержимое, вид и активная вкладка. `.axon` хранится в выбранном пользователем месте. История undo только в памяти. Все шрифты и UI-ресурсы находятся внутри дистрибутива.
 
 ## Ограничения среды и диагностика
 

@@ -1,6 +1,34 @@
-import { documentSchema, type AxonDocument, type Point } from "./document";
+import {
+  validateChangedObjects,
+  type AxonDocument,
+  type Point,
+} from "./document";
 import { objectBounds, union } from "./geometry";
 import { expandSelection } from "./operations";
+import { cacheDocumentIndex, getDocumentIndex } from "./indices";
+
+export function prepareScaleSelection(doc: AxonDocument, ids: string[]) {
+  const selected = new Set(expandSelection(doc, ids));
+  const { byId, dependentConnections } = getDocumentIndex(doc);
+  const box = union(
+    [...selected].map((id) => byId.get(id)!).map((o) => objectBounds(o, doc)),
+  );
+  for (const id of [...selected])
+    for (const connectorId of dependentConnections.get(id) ?? []) {
+      const o = byId.get(connectorId)!;
+      if (
+        o.type === "connector" &&
+        !o.locked &&
+        o.start.type === "bound" &&
+        o.end.type === "bound" &&
+        selected.has(o.start.nodeId) &&
+        selected.has(o.end.nodeId)
+      )
+        selected.add(o.id);
+    }
+  const objects = [...selected].map((id) => byId.get(id)!);
+  return { selected, box, objects };
+}
 
 /** Uniform transform of an immutable gesture snapshot; attachments remain logical. */
 export function scaleSelection(
@@ -8,25 +36,10 @@ export function scaleSelection(
   ids: string[],
   handle: string,
   delta: Point,
+  prepared = prepareScaleSelection(doc, ids),
 ): AxonDocument {
-  const selected = new Set(expandSelection(doc, ids));
-  const box = union(
-    doc.objects
-      .filter((o) => selected.has(o.id))
-      .map((o) => objectBounds(o, doc)),
-  );
+  const { selected, box, objects } = prepared;
   if (!box) return doc;
-  for (const o of doc.objects)
-    if (
-      o.type === "connector" &&
-      !o.locked &&
-      o.start.type === "bound" &&
-      o.end.type === "bound" &&
-      selected.has(o.start.nodeId) &&
-      selected.has(o.end.nodeId)
-    )
-      selected.add(o.id);
-  const objects = doc.objects.filter((o) => selected.has(o.id));
   if (!objects.length || objects.some((o) => o.locked)) return doc;
   const origin = {
     x: box.x + (handle.includes("w") ? box.w : 0),
@@ -85,7 +98,7 @@ export function scaleSelection(
     maximum,
     Math.max(minimum, 1 + (delta.x * v.x + delta.y * v.y) / length),
   );
-  if (!Number.isFinite(factor)) return doc;
+  if (!Number.isFinite(factor) || factor === 1) return doc;
   const point = (p: Point) => ({
     x: origin.x + (p.x - origin.x) * factor,
     y: origin.y + (p.y - origin.y) * factor,
@@ -123,5 +136,7 @@ export function scaleSelection(
       return { ...o, ...point(o), w: o.w * factor, h: o.h * factor, style };
     }),
   };
-  return documentSchema.safeParse(result).success ? result : doc;
+  if (!validateChangedObjects(doc, result)) return doc;
+  cacheDocumentIndex(doc, result);
+  return result;
 }

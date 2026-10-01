@@ -30,7 +30,7 @@ describe("editor dirty-state validation", () => {
       expect(editor.isDirty()).toBe(false);
       expect(editor.isDirty()).toBe(false);
     }
-    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(serialize).not.toHaveBeenCalled();
   });
 
   it("rechecks document edits, undo and redo against the saved content", () => {
@@ -79,13 +79,13 @@ describe("editor dirty-state validation", () => {
     editor.change((doc) => ({ ...doc, title: "First modified" }));
     expect(editor.isDirty(first.document.id)).toBe(true);
     expect(editor.isDirty(second.document.id)).toBe(false);
-    expect(serialize).toHaveBeenCalledTimes(3);
+    expect(serialize).not.toHaveBeenCalled();
 
     editor.closeSession(first.document.id, second);
     expect(editor.isDirty(first.document.id)).toBe(false);
     editor.load({ ...first, savedContent: "", dirty: true });
     expect(editor.isDirty(first.document.id)).toBe(true);
     expect(editor.isDirty(second.document.id)).toBe(false);
-    expect(serialize).toHaveBeenCalledTimes(4);
+    expect(serialize).not.toHaveBeenCalled();
   });
 });

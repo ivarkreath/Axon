@@ -296,8 +296,16 @@ try {
     s = await state();
     const c = s.document.objects.at(-1);
     assert.equal(c.style.strokeWidth, 2);
-    assert.equal(c.start.type, "bound");
-    assert.equal(c.end.type, "bound");
+    assert.equal(
+      c.start.type,
+      "bound",
+      `start at zoom ${z}: ${JSON.stringify(s.document.objects)}`,
+    );
+    assert.equal(
+      c.end.type,
+      "bound",
+      `end at zoom ${z}: ${JSON.stringify(s.document.objects)}`,
+    );
     const paths = object(c.id).locator("path");
     assert.equal(await paths.nth(2).getAttribute("stroke"), "none");
     const visibleWidth =
